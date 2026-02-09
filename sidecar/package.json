@@ -1,0 +1,27 @@
+{
+  "name": "mmo-express-sidecar",
+  "version": "1.0.0",
+  "description": "Playwright automation sidecar for MMO Express",
+  "main": "index.js",
+  "bin": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "build": "pkg . --targets node18-linux-x64,node18-win-x64,node18-macos-x64 --output dist/sidecar"
+  },
+  "pkg": {
+    "assets": [],
+    "targets": ["node18-linux-x64", "node18-win-x64", "node18-macos-x64"]
+  },
+  "keywords": ["playwright", "automation", "mmo"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.58.2",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.0"
+  }
+}

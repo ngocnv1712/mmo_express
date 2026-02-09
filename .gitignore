@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+target/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Tauri
+frontend/src-tauri/target/
+
+# Sidecar data (local)
+data/
+sidecar/data/
+
+# Screenshots
+*.png
+!frontend/src/assets/*.png
+
+# Temp files
+tmp/
+temp/
+*.tmp
