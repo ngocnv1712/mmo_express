@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { getSessions, closeSession, navigateSession, shutdownBrowser } from './api.js';
+  import { showConfirm, showPrompt } from './stores/dialog.js';
 
   let sessions = [];
   let loading = true;
@@ -40,7 +41,11 @@
   }
 
   async function handleNavigate(sessionId) {
-    const url = prompt('Enter URL:', 'https://');
+    const url = await showPrompt('Enter the URL to navigate to:', {
+      title: 'Navigate',
+      defaultValue: 'https://',
+      placeholder: 'https://example.com'
+    });
     if (url) {
       try {
         await navigateSession(sessionId, url);
@@ -51,7 +56,12 @@
   }
 
   async function handleShutdownAll() {
-    if (!confirm('Close all sessions and shutdown browser?')) return;
+    const confirmed = await showConfirm('Close all sessions and shutdown browser?', {
+      title: 'Shutdown All',
+      variant: 'warning',
+      confirmText: 'Shutdown'
+    });
+    if (!confirmed) return;
     try {
       await shutdownBrowser();
       sessions = [];

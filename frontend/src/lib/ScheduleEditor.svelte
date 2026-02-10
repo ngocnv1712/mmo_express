@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
+  import ParallelExecutionConfig from './automation/ParallelExecutionConfig.svelte';
 
   export let schedule = null;
   export let workflows = [];
@@ -16,6 +17,22 @@
   let cronPreset = '';
   let customCron = false;
   let enabled = true;
+
+  // Parallel execution config
+  let showParallelConfig = false;
+  let parallelConfig = {
+    maxConcurrent: 3,
+    queueMode: 'fifo',
+    delayBetween: 1000,
+    timeout: 300000,
+    stopOnError: false,
+    retry: {
+      maxRetries: 0,
+      strategy: 'none',
+      baseDelay: 1000,
+      maxDelay: 60000
+    }
+  };
 
   let presets = [];
   let loading = false;
@@ -39,6 +56,10 @@
       cron = schedule.cron || '0 9 * * *';
       enabled = schedule.enabled !== false;
       parseCron(cron);
+      // Load parallel config if exists
+      if (schedule.parallelConfig) {
+        parallelConfig = { ...parallelConfig, ...schedule.parallelConfig };
+      }
     }
   });
 
@@ -130,6 +151,7 @@
       profileIds: selectedProfileIds,
       cron,
       enabled,
+      parallelConfig,
     });
   }
 
@@ -317,6 +339,31 @@
         </div>
       </div>
 
+      <!-- Parallel Execution Settings -->
+      <div class="form-group">
+        <button
+          class="btn btn-toggle"
+          class:expanded={showParallelConfig}
+          on:click={() => showParallelConfig = !showParallelConfig}
+        >
+          <span class="toggle-icon">{showParallelConfig ? '▼' : '▶'}</span>
+          <span>Parallel Execution Settings</span>
+          <span class="config-summary">
+            ({parallelConfig.maxConcurrent} concurrent, {parallelConfig.queueMode.toUpperCase()})
+          </span>
+        </button>
+
+        {#if showParallelConfig}
+          <div class="parallel-config-wrapper">
+            <ParallelExecutionConfig
+              bind:config={parallelConfig}
+              onChange={(c) => parallelConfig = c}
+              {sidecarUrl}
+            />
+          </div>
+        {/if}
+      </div>
+
       <!-- Enable Toggle -->
       <div class="form-group inline">
         <label class="checkbox-label">
@@ -355,7 +402,7 @@
     background: var(--bg-secondary, #1a1a1a);
     border: 1px solid var(--border-color, #333);
     border-radius: 12px;
-    width: 600px;
+    width: 700px;
     max-width: 90vw;
     max-height: 90vh;
     display: flex;
@@ -612,5 +659,56 @@
 
   .btn-secondary:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.1);
+  }
+
+  .btn-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--bg-primary, #121212);
+    border: 1px solid var(--border-color, #333);
+    border-radius: 8px;
+    color: var(--text-primary, #fff);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s;
+  }
+
+  .btn-toggle:hover {
+    border-color: var(--accent-color, #3b82f6);
+  }
+
+  .btn-toggle.expanded {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-color: transparent;
+  }
+
+  .toggle-icon {
+    font-size: 10px;
+    color: var(--text-secondary, #888);
+  }
+
+  .config-summary {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+    font-weight: normal;
+  }
+
+  .parallel-config-wrapper {
+    border: 1px solid var(--border-color, #333);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+  }
+
+  .parallel-config-wrapper :global(.parallel-config) {
+    border: none;
+    border-radius: 0;
   }
 </style>

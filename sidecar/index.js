@@ -7,6 +7,11 @@ const { chromium, firefox, webkit } = require('playwright');
 const crypto = require('crypto');
 const readline = require('readline');
 const http = require('http');
+const path = require('path');
+
+// Data directories
+const DATA_DIR = path.join(process.cwd(), 'data');
+const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 
 // UUID v4 generator
 function uuidv4() {
@@ -23,12 +28,51 @@ const cookieManager = require('./cookie/manager');
 const testRunner = require('./test/runner');
 const automation = require('./automation');
 const Scheduler = require('./scheduler/scheduler');
+const ParallelExecutor = require('./scheduler/parallel');
+const NotificationManager = require('./notifications');
+const { getSystemResources, calculateRecommendedConcurrency, getCurrentLoad } = require('./utils/resources');
 
 // Workflow Manager instance
 const workflowManager = new automation.WorkflowManager();
 
 // Profile cache (synced from frontend)
 const profileCache = new Map();
+const PROFILE_CACHE_FILE = path.join(DATA_DIR, 'profile-cache.json');
+
+/**
+ * Load profile cache from file (on startup)
+ */
+async function loadProfileCache() {
+  try {
+    const fs = require('fs').promises;
+    const data = await fs.readFile(PROFILE_CACHE_FILE, 'utf-8');
+    const profiles = JSON.parse(data);
+    profileCache.clear();
+    for (const profile of profiles) {
+      profileCache.set(profile.id, profile);
+    }
+    console.error(`[CACHE] Loaded ${profiles.length} profiles from cache file`);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.error('[CACHE] Error loading cache:', err.message);
+    }
+    // File doesn't exist yet, that's ok
+  }
+}
+
+/**
+ * Save profile cache to file
+ */
+async function saveProfileCache() {
+  try {
+    const fs = require('fs').promises;
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    const profiles = Array.from(profileCache.values());
+    await fs.writeFile(PROFILE_CACHE_FILE, JSON.stringify(profiles, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[CACHE] Error saving cache:', err.message);
+  }
+}
 
 /**
  * Sync profiles from frontend
@@ -39,8 +83,13 @@ function syncProfiles(profiles) {
     profileCache.set(profile.id, profile);
   }
   console.error(`[CACHE] Synced ${profiles.length} profiles`);
+  // Save to file for persistence
+  saveProfileCache();
   return { success: true, count: profiles.length };
 }
+
+// Load cache on startup
+loadProfileCache();
 
 /**
  * Get profiles from cache
@@ -78,9 +127,6 @@ const scheduler = new Scheduler({
     }
   },
   onExecute: async (schedule) => {
-    // Execute workflow for each profile
-    const results = [];
-
     // Get workflow
     const workflow = workflowManager.getWorkflow(schedule.workflowId);
     if (!workflow) {
@@ -96,64 +142,130 @@ const scheduler = new Scheduler({
       return { success: false, error: 'No profiles in cache. Open the app to sync.', results: [] };
     }
 
-    console.error(`[SCHEDULER] Using ${profiles.length} cached profile(s)`);
+    console.error(`[SCHEDULER] Using ${profiles.length} cached profile(s) with parallel execution`);
 
-    for (const profileId of schedule.profileIds) {
-      try {
-        // Find profile data from API response
-        const profile = profiles.find(p => p.id === profileId);
-        if (!profile) {
-          console.error(`[SCHEDULER] Profile not found: ${profileId}`);
-          results.push({ profileId, success: false, error: 'Profile not found' });
-          continue;
-        }
+    // Get parallel config from schedule (with defaults)
+    const parallelConfig = schedule.parallelConfig || {};
+    const maxConcurrent = parallelConfig.maxConcurrent || 3;
+    const queueMode = parallelConfig.queueMode || 'fifo';
+    const retryStrategy = parallelConfig.retryStrategy || 'none';
+    const maxRetries = parallelConfig.maxRetries || 0;
+    const headless = parallelConfig.headless || false;
+    const blocking = parallelConfig.blocking || {};
 
-        console.error(`[SCHEDULER] Executing ${workflow.name} on profile ${profile.name || profileId}`);
+    console.error(`[SCHEDULER] Config: ${maxConcurrent} concurrent, headless=${headless}, blocking=${Object.keys(blocking).filter(k => blocking[k]).join(',') || 'none'}`);
 
-        // Create browser session
-        const sessionResult = await createSession(profile, null);
-        if (!sessionResult.success) {
-          console.error(`[SCHEDULER] Failed to create session: ${sessionResult.error}`);
-          results.push({ profileId, success: false, error: sessionResult.error });
-          continue;
-        }
+    // Create parallel executor
+    const executionId = `scheduled-${schedule.id}-${Date.now()}`;
+    const executor = new ParallelExecutor({
+      maxConcurrent,
+      queueMode,
+      retryStrategy,
+      maxRetries,
+      headless,
+      blocking,
+    });
 
-        const sessionId = sessionResult.sessionId;
-        console.error(`[SCHEDULER] Session created: ${sessionId}`);
+    // Track results
+    const results = [];
+    let completed = 0;
+    let failed = 0;
 
-        try {
-          // Execute workflow
-          const execResult = await executeWorkflow(sessionId, schedule.workflowId);
+    // Set up event handlers
+    executor.on('slotSuccess', (data) => {
+      console.error(`[SCHEDULER] Success: ${data.profileName || data.profileId}`);
+      results.push({ profileId: data.profileId, success: true });
+      completed++;
+    });
 
-          if (execResult.success) {
-            console.error(`[SCHEDULER] Workflow completed successfully on ${profile.name || profileId}`);
-            results.push({ profileId, success: true });
-          } else {
-            console.error(`[SCHEDULER] Workflow failed: ${execResult.error}`);
-            results.push({ profileId, success: false, error: execResult.error });
-          }
-        } finally {
-          // Always close session
-          console.error(`[SCHEDULER] Closing session: ${sessionId}`);
-          await closeSession(sessionId);
-        }
-      } catch (error) {
-        console.error(`[SCHEDULER] Error on profile ${profileId}:`, error.message);
-        results.push({ profileId, success: false, error: error.message });
-      }
+    executor.on('slotFailure', (data) => {
+      console.error(`[SCHEDULER] Failure: ${data.profileName || data.profileId} - ${data.error}`);
+      results.push({ profileId: data.profileId, success: false, error: data.error });
+      failed++;
+    });
+
+    // Store executor for monitoring
+    parallelExecutors.set(executionId, executor);
+
+    // Launch browser
+    let browser;
+    try {
+      browser = await launchBrowser('chromium', { headless });
+    } catch (error) {
+      parallelExecutors.delete(executionId);
+      return { success: false, error: `Failed to launch browser: ${error.message}` };
     }
 
-    const allSuccess = results.every(r => r.success);
-    return {
-      success: allSuccess,
-      results,
-      error: allSuccess ? null : 'Some executions failed',
-    };
+    // Wait for completion
+    return new Promise((resolve) => {
+      executor.on('complete', async (data) => {
+        console.error(`[SCHEDULER] Complete: ${data.completed}/${data.totalProfiles} succeeded`);
+
+        // Close browser
+        try {
+          await browser.close();
+        } catch (e) {
+          console.error('[SCHEDULER] Error closing browser:', e.message);
+        }
+
+        // Notify
+        notificationManager.notify('onComplete', {
+          ...data,
+          workflowName: workflow.name,
+          executionId,
+          scheduleName: schedule.name,
+        });
+
+        // Keep executor for a bit for monitoring
+        setTimeout(() => {
+          parallelExecutors.delete(executionId);
+        }, 30000);
+
+        const allSuccess = failed === 0;
+        resolve({
+          success: allSuccess,
+          results,
+          completed,
+          failed,
+          error: allSuccess ? null : `${failed} execution(s) failed`,
+        });
+      });
+
+      // Start execution
+      executor.start({
+        browser,
+        workflowExecutor: async (wf, ctx) => {
+          return workflowManager.executeWorkflow(wf, {
+            ...ctx,
+            outputDir: SCREENSHOTS_DIR,
+            session: { id: ctx.profile.id }
+          });
+        },
+        workflow,
+        profiles,
+      });
+    });
   },
 });
 
 // Initialize scheduler
 scheduler.init().catch(err => console.error('[SCHEDULER] Init error:', err));
+
+// Parallel Executor instances (one per workflow execution)
+const parallelExecutors = new Map();
+
+// Notification Manager instance
+let notificationManager = new NotificationManager({
+  enabled: false,
+  channels: [],
+  events: {
+    onStart: false,
+    onComplete: true,
+    onSuccess: false,
+    onFailure: true,
+    onRetry: false
+  }
+});
 
 // Browser instances (one per engine type)
 const browsers = {
@@ -233,7 +345,7 @@ async function initBrowser(options = {}) {
 /**
  * Create a new browser context with profile settings
  */
-async function createSession(profile, proxyConfig = null) {
+async function createSession(profile, proxyConfig = null, options = {}) {
   const sessionId = uuidv4();
 
   // Apply device preset if specified
@@ -253,13 +365,17 @@ async function createSession(profile, proxyConfig = null) {
     : fullProfile.browserType === 'webkit' || fullProfile.browserType === 'safari' ? 'webkit'
     : 'chromium';
 
+  // Extract options
+  const headless = options.headless || false;
+  const blocking = options.blocking || {};
+
   // Launch a NEW browser for each session (so we can detect when user closes it)
   let browser;
   try {
     browser = await launchBrowser(engineName, {
-      headless: false,
+      headless: headless,
     });
-    console.error(`[BROWSER] Launched new ${engineName} browser for session ${sessionId}`);
+    console.error(`[BROWSER] Launched new ${engineName} browser for session ${sessionId}${headless ? ' (headless)' : ''}`);
   } catch (error) {
     console.error(`[BROWSER] Failed to launch ${engineName}:`, error.message);
     return { success: false, error: error.message };
@@ -320,14 +436,43 @@ async function createSession(profile, proxyConfig = null) {
     // Create isolated context
     const context = await browser.newContext(contextOptions);
 
-    // Block unnecessary resources for performance
-    if (fullProfile.blockImages || fullProfile.blockMedia) {
+    // Block unnecessary resources for performance (from options.blocking or profile settings)
+    const blockImages = blocking.images || fullProfile.blockImages;
+    const blockMedia = blocking.media || fullProfile.blockMedia;
+    const blockFonts = blocking.fonts;
+    const blockCss = blocking.css;
+    const blockTrackers = blocking.trackers;
+
+    if (blockImages || blockMedia || blockFonts || blockCss || blockTrackers) {
+      // Known tracker domains
+      const trackerDomains = [
+        'google-analytics.com', 'googletagmanager.com', 'facebook.net',
+        'doubleclick.net', 'googlesyndication.com', 'adservice.google.com',
+        'analytics.', 'tracker.', 'pixel.', 'beacon.'
+      ];
+
       await context.route('**/*', (route) => {
         const resourceType = route.request().resourceType();
-        if (fullProfile.blockImages && ['image'].includes(resourceType)) {
+        const url = route.request().url();
+
+        // Block images
+        if (blockImages && resourceType === 'image') {
           return route.abort();
         }
-        if (fullProfile.blockMedia && ['media', 'font'].includes(resourceType)) {
+        // Block media (video, audio)
+        if (blockMedia && ['media'].includes(resourceType)) {
+          return route.abort();
+        }
+        // Block fonts
+        if (blockFonts && resourceType === 'font') {
+          return route.abort();
+        }
+        // Block CSS
+        if (blockCss && resourceType === 'stylesheet') {
+          return route.abort();
+        }
+        // Block trackers
+        if (blockTrackers && trackerDomains.some(d => url.includes(d))) {
           return route.abort();
         }
         return route.continue();
@@ -654,6 +799,54 @@ function removeExtension(extensionId) {
   try {
     const removed = extensionManager.removeExtension(extensionId);
     return { success: removed };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Download and install extension from Chrome Web Store
+ */
+async function downloadAndInstallExtension(webstoreId) {
+  try {
+    const result = await extensionManager.downloadAndInstall(webstoreId);
+    return { success: true, extension: result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Enable extension
+ */
+function enableExtension(extensionId) {
+  try {
+    const result = extensionManager.enableExtension(extensionId);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Disable extension
+ */
+function disableExtension(extensionId) {
+  try {
+    const result = extensionManager.disableExtension(extensionId);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Toggle extension enabled state
+ */
+function toggleExtension(extensionId) {
+  try {
+    const result = extensionManager.toggleExtension(extensionId);
+    return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -990,6 +1183,7 @@ async function executeWorkflow(sessionId, workflowIdOrObj) {
       page: session.page,
       browserContext: session.context,
       profile: session.profile,
+      outputDir: SCREENSHOTS_DIR,
       session: {
         id: session.id,
         url: session.page.url(),
@@ -1034,6 +1228,7 @@ async function executeWorkflowBatch(workflowIdOrObj, sessionIds, options = {}) {
         page: sessionData.page,
         browserContext: sessionData.browserContext,
         profile: sessionData.profile,
+        outputDir: SCREENSHOTS_DIR,
         session: { id: sessionData.sessionId },
       });
       results.push({
@@ -1096,6 +1291,7 @@ async function startDebug(sessionId, workflowIdOrObj, options = {}) {
       page: session.page,
       browserContext: session.context,
       profile: session.profile,
+      outputDir: SCREENSHOTS_DIR,
       session: { id: session.id, url: session.page.url() },
     }, options);
 
@@ -1321,7 +1517,7 @@ function getWorkflowSchedule(workflowId) {
  */
 async function saveWorkflowSchedule(data) {
   try {
-    const { workflowId, workflowName, workflow, cron, profileIds, enabled } = data;
+    const { workflowId, workflowName, workflow, cron, profileIds, enabled, parallelConfig } = data;
 
     // Check if schedule already exists for this workflow
     const schedules = scheduler.listSchedules();
@@ -1335,6 +1531,7 @@ async function saveWorkflowSchedule(data) {
       cron,
       profileIds,
       enabled,
+      parallelConfig, // Parallel execution settings
     };
 
     // Also register the workflow immediately
@@ -1378,6 +1575,533 @@ async function deleteWorkflowSchedule(workflowId) {
   }
 }
 
+// ============ Parallel Execution ============
+
+/**
+ * Start parallel workflow execution
+ */
+async function startParallelExecution(params) {
+  const { workflowId, profileIds, options = {} } = params;
+
+  // Get workflow
+  const workflow = workflowManager.getWorkflow(workflowId);
+  if (!workflow) {
+    return { success: false, error: 'Workflow not found' };
+  }
+
+  // Get profiles from cache
+  const profiles = getCachedProfiles(profileIds);
+  if (profiles.length === 0) {
+    return { success: false, error: 'No profiles found in cache. Open the app to sync.' };
+  }
+
+  // Create parallel executor
+  const executionId = `parallel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const headless = options.headless || false;
+  const blocking = options.blocking || {};
+
+  const executor = new ParallelExecutor({
+    maxConcurrent: options.maxConcurrent || 3,
+    delayBetween: options.delayBetween || 1000,
+    timeout: options.timeout || 300000,
+    stopOnError: options.stopOnError || false,
+    queueMode: options.queueMode || 'fifo',
+    headless,
+    blocking,
+    retry: options.retry || {}
+  });
+
+  // Setup event listeners
+  executor.on('start', (data) => {
+    const blockingInfo = Object.entries(blocking).filter(([k, v]) => v).map(([k]) => k).join(', ') || 'none';
+    console.error(`[PARALLEL] Started: ${data.workflowName} with ${data.totalProfiles} profiles`);
+    console.error(`[PARALLEL] Settings: headless=${headless}, blocking=[${blockingInfo}], concurrent=${data.maxConcurrent}`);
+    notificationManager.notify('onStart', { ...data, executionId });
+  });
+
+  executor.on('progress', (data) => {
+    console.error(`[PARALLEL] Progress: ${data.profileName || data.profileId} - ${data.percentage}%`);
+  });
+
+  executor.on('slotSuccess', (data) => {
+    console.error(`[PARALLEL] Success: ${data.profileName || data.profileId}`);
+    notificationManager.notify('onSuccess', { ...data, workflowName: workflow.name, executionId });
+  });
+
+  executor.on('slotFailure', (data) => {
+    console.error(`[PARALLEL] Failed: ${data.profileName || data.profileId} - ${data.error}`);
+    notificationManager.notify('onFailure', { ...data, workflowName: workflow.name, executionId });
+  });
+
+  executor.on('slotRetry', (data) => {
+    console.error(`[PARALLEL] Retry: ${data.profileName || data.profileId} (${data.retryCount}/${data.maxRetries})`);
+    notificationManager.notify('onRetry', { ...data, workflowName: workflow.name, executionId });
+  });
+
+  executor.on('complete', (data) => {
+    console.error(`[PARALLEL] Complete: ${data.completed}/${data.totalProfiles} succeeded`);
+    notificationManager.notify('onComplete', { ...data, workflowName: workflow.name, executionId });
+    // Keep executor for 30 seconds so monitor can show final status
+    setTimeout(() => {
+      parallelExecutors.delete(executionId);
+    }, 30000);
+  });
+
+  // Store executor
+  parallelExecutors.set(executionId, executor);
+
+  // Launch browser for this execution
+  let browser;
+  try {
+    browser = await launchBrowser('chromium', { headless });
+  } catch (error) {
+    parallelExecutors.delete(executionId);
+    return { success: false, error: `Failed to launch browser: ${error.message}` };
+  }
+
+  // Start execution (non-blocking)
+  executor.start({
+    browser,
+    workflowExecutor: async (wf, ctx) => {
+      return workflowManager.executeWorkflow(wf, {
+        ...ctx,
+        outputDir: SCREENSHOTS_DIR,
+        session: { id: ctx.profile.id }
+      });
+    },
+    workflow,
+    profiles,
+    options
+  }).then(async (status) => {
+    // Close browser when done
+    try {
+      await browser.close();
+    } catch (e) {
+      // Ignore
+    }
+    return status;
+  }).catch(async (error) => {
+    console.error(`[PARALLEL] Execution error:`, error.message);
+    try {
+      await browser.close();
+    } catch (e) {
+      // Ignore
+    }
+  });
+
+  return {
+    success: true,
+    executionId,
+    status: executor.getStatus()
+  };
+}
+
+/**
+ * Get parallel execution status
+ */
+function getParallelStatus(executionId) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  return { success: true, status: executor.getStatus() };
+}
+
+/**
+ * Get all parallel executions
+ */
+function listParallelExecutions() {
+  const executions = [];
+  for (const [id, executor] of parallelExecutors) {
+    executions.push({
+      id,
+      ...executor.getStatus()
+    });
+  }
+  return { success: true, executions };
+}
+
+/**
+ * Pause parallel execution
+ */
+function pauseParallelExecution(executionId) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  executor.pause();
+  return { success: true, status: executor.getStatus() };
+}
+
+/**
+ * Resume parallel execution
+ */
+function resumeParallelExecution(executionId) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  executor.resume();
+  return { success: true, status: executor.getStatus() };
+}
+
+/**
+ * Stop parallel execution
+ */
+async function stopParallelExecution(executionId) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  await executor.stop();
+  parallelExecutors.delete(executionId);
+  return { success: true };
+}
+
+/**
+ * Skip current slot in parallel execution
+ */
+async function skipParallelSlot(executionId, slotId) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  await executor.skipSlot(slotId);
+  return { success: true, status: executor.getStatus() };
+}
+
+/**
+ * Add profiles to running execution queue
+ */
+function addToParallelQueue(executionId, profileIds) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  const profiles = getCachedProfiles(profileIds);
+  executor.addProfiles(profiles);
+  return { success: true, status: executor.getStatus() };
+}
+
+/**
+ * Remove profile from execution queue
+ */
+function removeFromParallelQueue(executionId, profileId) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  executor.removeFromQueue(profileId);
+  return { success: true, status: executor.getStatus() };
+}
+
+/**
+ * Update parallel execution config
+ */
+function updateParallelConfig(executionId, config) {
+  const executor = parallelExecutors.get(executionId);
+  if (!executor) {
+    return { success: false, error: 'Execution not found' };
+  }
+  executor.updateConfig(config);
+  return { success: true };
+}
+
+// ============ Notifications ============
+
+/**
+ * Get notification config
+ */
+function getNotificationConfig() {
+  return { success: true, config: notificationManager.getConfig() };
+}
+
+/**
+ * Update notification config
+ */
+function updateNotificationConfig(config) {
+  try {
+    notificationManager.updateConfig(config);
+    return { success: true, config: notificationManager.getConfig() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Add notification channel
+ */
+function addNotificationChannel(channel) {
+  try {
+    const id = notificationManager.addChannel(channel);
+    return { success: true, id, config: notificationManager.getConfig() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Remove notification channel
+ */
+function removeNotificationChannel(channelId) {
+  try {
+    notificationManager.removeChannel(channelId);
+    return { success: true, config: notificationManager.getConfig() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Test notification channel
+ */
+async function testNotificationChannel(channelId) {
+  try {
+    await notificationManager.testChannel(channelId);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Send test notification
+ */
+async function sendTestNotification() {
+  try {
+    await notificationManager.notify('onComplete', {
+      workflowName: 'Test Workflow',
+      totalProfiles: 10,
+      completed: 8,
+      failed: 2,
+      elapsed: 120000,
+      progress: 80
+    });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// ============ System Resources ============
+
+/**
+ * Get system resource information
+ */
+function getResources() {
+  try {
+    const resources = getSystemResources();
+    return { success: true, resources };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get recommended concurrency based on system resources
+ */
+function getRecommendedConcurrency(options = {}) {
+  try {
+    const recommendation = calculateRecommendedConcurrency(options);
+    return { success: true, ...recommendation };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get current system load
+ */
+function getSystemLoad() {
+  try {
+    const load = getCurrentLoad();
+    return { success: true, load };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// ============ Execution History & Reporting ============
+
+const { getDB } = require('./database');
+
+/**
+ * Get execution history
+ */
+function getExecutionHistory(options = {}) {
+  try {
+    const db = getDB();
+    const limit = options.limit || 100;
+    const offset = options.offset || 0;
+    const executions = db.getExecutions(limit, offset);
+    return { success: true, executions };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get execution history by schedule
+ */
+function getExecutionsBySchedule(scheduleId, limit = 50) {
+  try {
+    const db = getDB();
+    const executions = db.getExecutionsBySchedule(scheduleId, limit);
+    return { success: true, executions };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get execution statistics
+ */
+function getExecutionStats() {
+  try {
+    const db = getDB();
+    const stats = db.getExecutionStats();
+
+    // Get schedule stats
+    const schedules = db.getSchedules();
+    const scheduleStats = {
+      total: schedules.length,
+      enabled: schedules.filter(s => s.enabled).length,
+      totalRuns: schedules.reduce((sum, s) => sum + (s.runCount || 0), 0),
+      totalSuccess: schedules.reduce((sum, s) => sum + (s.successCount || 0), 0),
+      totalFailure: schedules.reduce((sum, s) => sum + (s.failureCount || 0), 0),
+    };
+
+    return {
+      success: true,
+      stats: {
+        executions: stats,
+        schedules: scheduleStats
+      }
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get daily execution stats for charts
+ */
+function getDailyStats(days = 7) {
+  try {
+    const db = getDB();
+    const dailyStats = [];
+
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+
+      // Query executions for this day
+      const stmt = db.db.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+          SUM(CASE WHEN status = 'failure' THEN 1 ELSE 0 END) as failure,
+          AVG(CASE WHEN status = 'success' THEN duration ELSE NULL END) as avgDuration
+        FROM execution_history
+        WHERE date(started_at) = ?
+      `);
+
+      const row = stmt.get(dateStr) || { total: 0, success: 0, failure: 0, avgDuration: 0 };
+
+      dailyStats.push({
+        date: dateStr,
+        total: row.total || 0,
+        success: row.success || 0,
+        failure: row.failure || 0,
+        avgDuration: Math.round(row.avgDuration || 0)
+      });
+    }
+
+    return { success: true, dailyStats };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Export execution history to CSV
+ */
+function exportExecutionsCSV(options = {}) {
+  try {
+    const db = getDB();
+    const limit = options.limit || 1000;
+    const executions = db.getExecutions(limit, 0);
+
+    // CSV header
+    const headers = ['ID', 'Schedule', 'Workflow', 'Profile', 'Status', 'Error', 'Started', 'Duration (ms)', 'Steps'];
+
+    // CSV rows
+    const rows = executions.map(e => [
+      e.id,
+      e.scheduleId,
+      e.workflowId,
+      e.profileName || e.profileId,
+      e.status,
+      (e.error || '').replace(/"/g, '""'),
+      e.startedAt,
+      e.duration,
+      `${e.stepsCompleted}/${e.totalSteps}`
+    ]);
+
+    // Build CSV
+    const csv = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+
+    return { success: true, csv, count: executions.length };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Delete old execution history
+ */
+function cleanupExecutions(days = 30) {
+  try {
+    const db = getDB();
+    const deleted = db.deleteOldExecutions(days);
+    return { success: true, deleted };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Log execution result (called by parallel executor)
+ */
+function logExecution(data) {
+  try {
+    const db = getDB();
+    const execution = {
+      id: `exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      scheduleId: data.scheduleId || '',
+      workflowId: data.workflowId,
+      profileId: data.profileId,
+      profileName: data.profileName || '',
+      status: data.status,
+      error: data.error || '',
+      startedAt: data.startedAt || new Date().toISOString(),
+      finishedAt: data.finishedAt || new Date().toISOString(),
+      duration: data.duration || 0,
+      stepsCompleted: data.stepsCompleted || 0,
+      totalSteps: data.totalSteps || 0,
+      logs: data.logs || []
+    };
+    db.createExecution(execution);
+    return { success: true, execution };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 // ============ HTTP Server (for frontend dev) ============
 
 const HTTP_PORT = process.env.SIDECAR_HTTP_PORT || 3456;
@@ -1411,7 +2135,13 @@ const httpServer = http.createServer(async (req, res) => {
         // Extract args based on action
         let result;
         if (action === 'createSession') {
-          result = await handler(params.profile, params.proxy);
+          // Pass options including headless and blocking
+          const options = {
+            headless: params.headless || false,
+            blocking: params.blocking || {}
+          };
+          console.error(`[DEBUG] createSession called with headless=${options.headless}, blocking=${JSON.stringify(options.blocking)}`);
+          result = await handler(params.profile, params.proxy, options);
         } else if (action === 'navigate') {
           result = await handler(params.sessionId, params.url);
         } else if (action === 'closeSession' || action === 'exportCookies' || action === 'getUrl' || action === 'getTitle') {
@@ -1437,6 +2167,10 @@ const httpServer = http.createServer(async (req, res) => {
         } else if (action === 'importExtensionCRX') {
           result = await handler(params.crxPath);
         } else if (action === 'removeExtension') {
+          result = await handler(params.extensionId);
+        } else if (action === 'downloadAndInstallExtension') {
+          result = await handler(params.webstoreId);
+        } else if (action === 'enableExtension' || action === 'disableExtension' || action === 'toggleExtension') {
           result = await handler(params.extensionId);
         } else if (action === 'init') {
           result = await handler(params);
@@ -1488,8 +2222,38 @@ const httpServer = http.createServer(async (req, res) => {
           result = await handler(params.profiles || []);
         } else if (action === 'getCachedProfiles') {
           result = await handler(params.profileIds || []);
+        } else if (action === 'startParallelExecution') {
+          result = await handler(params);
+        } else if (action === 'getParallelStatus' || action === 'pauseParallelExecution' || action === 'resumeParallelExecution' || action === 'stopParallelExecution') {
+          result = await handler(params.executionId);
+        } else if (action === 'skipParallelSlot') {
+          result = await handler(params.executionId, params.slotId);
+        } else if (action === 'addToParallelQueue') {
+          result = await handler(params.executionId, params.profileIds);
+        } else if (action === 'removeFromParallelQueue') {
+          result = await handler(params.executionId, params.profileId);
+        } else if (action === 'updateParallelConfig') {
+          result = await handler(params.executionId, params.config);
+        } else if (action === 'updateNotificationConfig') {
+          result = await handler(params.config || params);
+        } else if (action === 'addNotificationChannel') {
+          result = await handler(params.channel || params);
+        } else if (action === 'removeNotificationChannel' || action === 'testNotificationChannel') {
+          result = await handler(params.channelId);
+        } else if (action === 'logExecution') {
+          result = await handler(params);
+        } else if (action === 'getDailyStats') {
+          result = await handler(params.days);
+        } else if (action === 'getExecutionHistory') {
+          result = await handler(params);
+        } else if (action === 'getExecutionsBySchedule') {
+          result = await handler(params.scheduleId, params.limit);
+        } else if (action === 'exportExecutionsCSV') {
+          result = await handler(params);
+        } else if (action === 'cleanupExecutions') {
+          result = await handler(params.days);
         } else {
-          // No-arg handlers (listSchedules, getSchedulerStatus, getCronPresets, etc.)
+          // No-arg handlers (listSchedules, getSchedulerStatus, getCronPresets, listParallelExecutions, getNotificationConfig, getExecutionStats, etc.)
           result = await handler();
         }
 
@@ -1551,7 +2315,11 @@ const handlers = {
   listExtensions,
   importExtension,
   importExtensionCRX,
+  downloadAndInstallExtension,
   removeExtension,
+  enableExtension,
+  disableExtension,
+  toggleExtension,
 
   // Utilities
   evaluate,
@@ -1623,6 +2391,40 @@ const handlers = {
   syncProfiles,
   getCachedProfiles: (profileIds) => ({ success: true, profiles: getCachedProfiles(profileIds) }),
   getAllCachedProfiles: () => ({ success: true, profiles: getAllCachedProfiles() }),
+
+  // Parallel Execution
+  startParallelExecution,
+  getParallelStatus,
+  listParallelExecutions,
+  pauseParallelExecution,
+  resumeParallelExecution,
+  stopParallelExecution,
+  skipParallelSlot,
+  addToParallelQueue,
+  removeFromParallelQueue,
+  updateParallelConfig,
+
+  // Notifications
+  getNotificationConfig,
+  updateNotificationConfig,
+  addNotificationChannel,
+  removeNotificationChannel,
+  testNotificationChannel,
+  sendTestNotification,
+
+  // System Resources
+  getResources,
+  getRecommendedConcurrency,
+  getSystemLoad,
+
+  // Execution History & Reporting
+  getExecutionHistory,
+  getExecutionsBySchedule,
+  getExecutionStats,
+  getDailyStats,
+  exportExecutionsCSV,
+  cleanupExecutions,
+  logExecution,
 };
 
 // Listen for commands from Tauri

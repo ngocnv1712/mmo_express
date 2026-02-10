@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { getProxies, createNewProxy, deleteProxy, updateProxy } from './api.js';
+  import { showConfirm, showPrompt } from './stores/dialog.js';
 
   let proxies = [];
   let loading = true;
@@ -47,7 +48,12 @@
   }
 
   async function handleDeleteProxy(id) {
-    if (!confirm('Delete this proxy?')) return;
+    const confirmed = await showConfirm('Delete this proxy?', {
+      title: 'Delete Proxy',
+      variant: 'danger',
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
     try {
       await deleteProxy(id);
       await loadProxies();
@@ -67,8 +73,11 @@
     };
   }
 
-  function parseProxyString() {
-    const input = prompt('Paste proxy (host:port:user:pass or host:port):');
+  async function parseProxyString() {
+    const input = await showPrompt('Paste proxy string:', {
+      title: 'Parse Proxy',
+      placeholder: 'host:port or host:port:user:pass'
+    });
     if (!input) return;
 
     const parts = input.trim().split(':');

@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
+  import { showConfirm } from '../stores/dialog.js';
 
   export let show = false;
   export let workflowId = null;
@@ -57,14 +58,24 @@
     selectedExecution = null;
   }
 
-  function clearHistory() {
-    if (!confirm('Clear all execution history?')) return;
+  async function clearHistory() {
+    const confirmed = await showConfirm('Clear all execution history?', {
+      title: 'Clear History',
+      variant: 'warning',
+      confirmText: 'Clear All'
+    });
+    if (!confirmed) return;
     localStorage.setItem('execution_history', '[]');
     history = [];
   }
 
-  function deleteExecution(id) {
-    if (!confirm('Delete this execution record?')) return;
+  async function deleteExecution(id) {
+    const confirmed = await showConfirm('Delete this execution record?', {
+      title: 'Delete Record',
+      variant: 'danger',
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
     const stored = localStorage.getItem('execution_history') || '[]';
     const allHistory = JSON.parse(stored);
     const filtered = allHistory.filter(h => h.id !== id);

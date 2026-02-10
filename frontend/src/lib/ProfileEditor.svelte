@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
-  import { createNewProfile, updateProfile, getProxies, getPresetList, getPreset } from './api.js';
+  import { createNewProfile, updateProfile, getProxies, getPresetList, getPreset, listExtensions } from './api.js';
+  import { showAlert } from './stores/dialog.js';
 
   export let profile = null;
 
@@ -9,6 +10,7 @@
   let activeTab = 'overview';
   let saving = false;
   let proxies = [];
+  let extensions = [];
 
   // Presets
   let presets = [];
@@ -41,14 +43,24 @@
     webrtcMode: 'replace',
     geoMode: 'query',
     proxyId: '',
+    extensionIds: [],
     notes: ''
   };
 
-  const tabs = [
+  // Dynamic tabs based on browser support
+  $: supportsExtensions = ['chrome', 'chromium', 'edge'].includes(form.browserType);
+
+  $: tabs = [
     { id: 'overview', label: 'Overview' },
     { id: 'network', label: 'Network' },
+    ...(supportsExtensions ? [{ id: 'extensions', label: 'Extensions' }] : []),
     { id: 'advanced', label: 'Advanced' }
   ];
+
+  // Reset to overview if on extensions tab and browser doesn't support it
+  $: if (!supportsExtensions && activeTab === 'extensions') {
+    activeTab = 'overview';
+  }
 
   const osOptions = [
     { id: 'windows', label: 'Windows', icon: '🪟' },
@@ -122,12 +134,19 @@
     try {
       proxies = await getProxies() || [];
       presets = getPresetList() || [];
+      const extResult = await listExtensions();
+      extensions = extResult?.extensions || [];
     } catch (e) {
-      console.error('Failed to load proxies:', e);
+      console.error('Failed to load data:', e);
     }
 
     if (!profile) {
       generateRandomFingerprint();
+    }
+
+    // Initialize extensionIds from profile
+    if (profile?.extensionIds) {
+      form.extensionIds = [...profile.extensionIds];
     }
   });
 
@@ -275,7 +294,7 @@
       dispatch('save');
     } catch (e) {
       console.error('Failed to save profile:', e);
-      alert('Failed to save profile: ' + e);
+      showAlert('Failed to save profile: ' + e, { title: 'Save Failed', variant: 'danger' });
     }
     saving = false;
   }
@@ -456,6 +475,54 @@
           <option value="allow">Allow</option>
           <option value="block">Block</option>
         </select>
+      </div>
+
+    {:else if activeTab === 'extensions'}
+      <div class="section">
+        <h3>Browser Extensions</h3>
+        <p class="section-desc">
+          Select extensions to load with this profile. Extensions only work with Chromium-based browsers.
+        </p>
+      </div>
+
+      {#if extensions.length === 0}
+        <div class="empty-extensions">
+          <div class="empty-icon">🧩</div>
+          <p>No extensions installed</p>
+          <p class="hint">Go to Extensions tab to import extensions first</p>
+        </div>
+      {:else}
+        <div class="extension-list">
+          {#each extensions as ext}
+            <label class="extension-item" class:selected={form.extensionIds.includes(ext.id)}>
+              <input
+                type="checkbox"
+                checked={form.extensionIds.includes(ext.id)}
+                on:change={(e) => {
+                  if (e.target.checked) {
+                    form.extensionIds = [...form.extensionIds, ext.id];
+                  } else {
+                    form.extensionIds = form.extensionIds.filter(id => id !== ext.id);
+                  }
+                }}
+              />
+              <div class="ext-icon">EXT</div>
+              <div class="ext-info">
+                <span class="ext-name">{ext.name || ext.id}</span>
+                {#if ext.version}
+                  <span class="ext-version">v{ext.version}</span>
+                {/if}
+              </div>
+            </label>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="section" style="margin-top: 1.5rem;">
+        <p class="info-box">
+          <strong>Note:</strong> Selected extensions will be loaded when launching this profile with Chromium browser.
+          Firefox and Safari use different extension formats and are not supported.
+        </p>
       </div>
 
     {:else if activeTab === 'advanced'}
@@ -807,5 +874,105 @@
   .preset-desc {
     font-size: 0.7rem;
     color: #888;
+  }
+
+  /* Extensions Tab */
+  .section-desc {
+    color: #888;
+    font-size: 0.85rem;
+    margin-top: -0.5rem;
+  }
+
+  .empty-extensions {
+    text-align: center;
+    padding: 3rem;
+    color: #888;
+  }
+
+  .empty-extensions .empty-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+  }
+
+  .empty-extensions .hint {
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+    color: #666;
+  }
+
+  .extension-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .extension-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: #0f3460;
+    border: 2px solid #1a4a7a;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .extension-item:hover {
+    border-color: #e94560;
+  }
+
+  .extension-item.selected {
+    border-color: #e94560;
+    background: #1a2a4e;
+  }
+
+  .extension-item input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+  }
+
+  .extension-item .ext-icon {
+    width: 36px;
+    height: 36px;
+    background: #1a4a7a;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    color: #888;
+  }
+
+  .extension-item .ext-info {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .extension-item .ext-name {
+    font-weight: 500;
+    color: #fff;
+  }
+
+  .extension-item .ext-version {
+    font-size: 0.75rem;
+    color: #4CAF50;
+  }
+
+  .info-box {
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-size: 0.85rem;
+    color: #aaa;
+  }
+
+  .info-box strong {
+    color: #3b82f6;
   }
 </style>

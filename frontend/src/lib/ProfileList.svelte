@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
   import { getProfiles, getProxies, deleteProfile, launchProfile, createNewProfile, getPresetList, createFromPreset, testProfileFingerprint, getResourceCountByPlatform } from './api.js';
+  import { showAlert, showConfirm } from './stores/dialog.js';
   import ProfileEditor from './ProfileEditor.svelte';
   import ResourceModal from './ResourceModal.svelte';
 
@@ -95,7 +96,7 @@
       await loadData();
     } catch (error) {
       console.error('Failed to create from preset:', error);
-      alert('Failed to create profile: ' + error);
+      showAlert('Failed to create profile: ' + error, { title: 'Error', variant: 'danger' });
     }
   }
 
@@ -166,7 +167,12 @@
   }
 
   async function handleDeleteProfile(id) {
-    if (!confirm('Delete this profile?')) return;
+    const confirmed = await showConfirm('Delete this profile?', {
+      title: 'Delete Profile',
+      variant: 'danger',
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
     try {
       await deleteProfile(id);
       await loadData();
@@ -211,7 +217,7 @@
       await launchProfile(profile, proxyConfig, url);
     } catch (error) {
       console.error('Failed to launch profile:', error);
-      alert('Failed to launch: ' + error);
+      showAlert('Failed to launch: ' + error, { title: 'Launch Failed', variant: 'danger' });
     }
 
     launchingProfileId = null;

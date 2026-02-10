@@ -198,6 +198,71 @@ pub struct DbGroup {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DbSchedule {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(rename = "workflowId")]
+    pub workflow_id: String,
+    pub cron: String,
+    #[serde(rename = "cronDescription")]
+    pub cron_description: String,
+    pub enabled: bool,
+    #[serde(rename = "runOnStart")]
+    pub run_on_start: bool,
+    #[serde(rename = "maxRetries")]
+    pub max_retries: i32,
+    pub timeout: i32,
+    #[serde(rename = "profileIds")]
+    pub profile_ids: String,          // JSON array of profile IDs
+    #[serde(rename = "parallelConfig")]
+    pub parallel_config: String,      // JSON object
+    #[serde(rename = "lastRun")]
+    pub last_run: String,
+    #[serde(rename = "lastStatus")]
+    pub last_status: String,
+    #[serde(rename = "lastError")]
+    pub last_error: String,
+    #[serde(rename = "nextRun")]
+    pub next_run: String,
+    #[serde(rename = "runCount")]
+    pub run_count: i32,
+    #[serde(rename = "successCount")]
+    pub success_count: i32,
+    #[serde(rename = "failureCount")]
+    pub failure_count: i32,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DbExecutionHistory {
+    pub id: String,
+    #[serde(rename = "scheduleId")]
+    pub schedule_id: String,
+    #[serde(rename = "workflowId")]
+    pub workflow_id: String,
+    #[serde(rename = "profileId")]
+    pub profile_id: String,
+    #[serde(rename = "profileName")]
+    pub profile_name: String,
+    pub status: String,               // success, failure, skipped, timeout
+    pub error: String,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    #[serde(rename = "finishedAt")]
+    pub finished_at: String,
+    pub duration: i32,                // milliseconds
+    #[serde(rename = "stepsCompleted")]
+    pub steps_completed: i32,
+    #[serde(rename = "totalSteps")]
+    pub total_steps: i32,
+    pub logs: String,                 // JSON array of log entries
+}
+
 // ============ Database State ============
 
 pub struct Database {
@@ -342,12 +407,73 @@ impl Database {
             [],
         ).map_err(|e| e.to_string())?;
 
+        // Schedules table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schedules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                workflow_id TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                cron_description TEXT DEFAULT '',
+                enabled INTEGER DEFAULT 1,
+                run_on_start INTEGER DEFAULT 0,
+                max_retries INTEGER DEFAULT 0,
+                timeout INTEGER DEFAULT 300000,
+                profile_ids TEXT DEFAULT '[]',
+                parallel_config TEXT DEFAULT '{}',
+                last_run TEXT DEFAULT '',
+                last_status TEXT DEFAULT '',
+                last_error TEXT DEFAULT '',
+                next_run TEXT DEFAULT '',
+                run_count INTEGER DEFAULT 0,
+                success_count INTEGER DEFAULT 0,
+                failure_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+            )",
+            [],
+        ).map_err(|e| e.to_string())?;
+
+        // Execution history table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS execution_history (
+                id TEXT PRIMARY KEY,
+                schedule_id TEXT DEFAULT '',
+                workflow_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                profile_name TEXT DEFAULT '',
+                status TEXT NOT NULL,
+                error TEXT DEFAULT '',
+                started_at TEXT NOT NULL,
+                finished_at TEXT DEFAULT '',
+                duration INTEGER DEFAULT 0,
+                steps_completed INTEGER DEFAULT 0,
+                total_steps INTEGER DEFAULT 0,
+                logs TEXT DEFAULT '[]'
+            )",
+            [],
+        ).map_err(|e| e.to_string())?;
+
         // Create indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_profiles_group ON profiles(group_id)", [])
             .map_err(|e| e.to_string())?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_profiles_proxy ON profiles(proxy_id)", [])
             .map_err(|e| e.to_string())?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status)", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_schedules_workflow ON schedules(workflow_id)", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled)", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_schedule ON execution_history(schedule_id)", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_workflow ON execution_history(workflow_id)", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_profile ON execution_history(profile_id)", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_started ON execution_history(started_at)", [])
             .map_err(|e| e.to_string())?;
 
         Ok(())
@@ -774,6 +900,237 @@ impl Database {
         conn.execute("DELETE FROM groups WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    // ============ Schedule CRUD ============
+
+    pub fn create_schedule(&self, schedule: &DbSchedule) -> Result<DbSchedule, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO schedules (
+                id, name, description, workflow_id, cron, cron_description,
+                enabled, run_on_start, max_retries, timeout, profile_ids, parallel_config,
+                last_run, last_status, last_error, next_run,
+                run_count, success_count, failure_count, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            params![
+                schedule.id, schedule.name, schedule.description, schedule.workflow_id,
+                schedule.cron, schedule.cron_description,
+                schedule.enabled, schedule.run_on_start, schedule.max_retries, schedule.timeout,
+                schedule.profile_ids, schedule.parallel_config,
+                schedule.last_run, schedule.last_status, schedule.last_error, schedule.next_run,
+                schedule.run_count, schedule.success_count, schedule.failure_count,
+                schedule.created_at, schedule.updated_at
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(schedule.clone())
+    }
+
+    pub fn get_schedules(&self) -> Result<Vec<DbSchedule>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, workflow_id, cron, cron_description,
+                    enabled, run_on_start, max_retries, timeout, profile_ids, parallel_config,
+                    last_run, last_status, last_error, next_run,
+                    run_count, success_count, failure_count, created_at, updated_at
+             FROM schedules ORDER BY created_at DESC"
+        ).map_err(|e| e.to_string())?;
+
+        let schedules = stmt.query_map([], |row| {
+            Ok(DbSchedule {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                workflow_id: row.get(3)?,
+                cron: row.get(4)?,
+                cron_description: row.get(5)?,
+                enabled: row.get(6)?,
+                run_on_start: row.get(7)?,
+                max_retries: row.get(8)?,
+                timeout: row.get(9)?,
+                profile_ids: row.get(10)?,
+                parallel_config: row.get(11)?,
+                last_run: row.get(12)?,
+                last_status: row.get(13)?,
+                last_error: row.get(14)?,
+                next_run: row.get(15)?,
+                run_count: row.get(16)?,
+                success_count: row.get(17)?,
+                failure_count: row.get(18)?,
+                created_at: row.get(19)?,
+                updated_at: row.get(20)?,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        schedules.collect::<SqlResult<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    pub fn get_schedule(&self, id: &str) -> Result<Option<DbSchedule>, String> {
+        let schedules = self.get_schedules()?;
+        Ok(schedules.into_iter().find(|s| s.id == id))
+    }
+
+    pub fn update_schedule(&self, schedule: &DbSchedule) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "UPDATE schedules SET
+                name = ?2, description = ?3, workflow_id = ?4, cron = ?5, cron_description = ?6,
+                enabled = ?7, run_on_start = ?8, max_retries = ?9, timeout = ?10,
+                profile_ids = ?11, parallel_config = ?12,
+                last_run = ?13, last_status = ?14, last_error = ?15, next_run = ?16,
+                run_count = ?17, success_count = ?18, failure_count = ?19, updated_at = ?20
+            WHERE id = ?1",
+            params![
+                schedule.id, schedule.name, schedule.description, schedule.workflow_id,
+                schedule.cron, schedule.cron_description,
+                schedule.enabled, schedule.run_on_start, schedule.max_retries, schedule.timeout,
+                schedule.profile_ids, schedule.parallel_config,
+                schedule.last_run, schedule.last_status, schedule.last_error, schedule.next_run,
+                schedule.run_count, schedule.success_count, schedule.failure_count, schedule.updated_at
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    pub fn delete_schedule(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM schedules WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ============ Execution History CRUD ============
+
+    pub fn create_execution(&self, execution: &DbExecutionHistory) -> Result<DbExecutionHistory, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO execution_history (
+                id, schedule_id, workflow_id, profile_id, profile_name,
+                status, error, started_at, finished_at, duration,
+                steps_completed, total_steps, logs
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                execution.id, execution.schedule_id, execution.workflow_id,
+                execution.profile_id, execution.profile_name,
+                execution.status, execution.error,
+                execution.started_at, execution.finished_at, execution.duration,
+                execution.steps_completed, execution.total_steps, execution.logs
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(execution.clone())
+    }
+
+    pub fn get_executions(&self, limit: i32, offset: i32) -> Result<Vec<DbExecutionHistory>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, schedule_id, workflow_id, profile_id, profile_name,
+                    status, error, started_at, finished_at, duration,
+                    steps_completed, total_steps, logs
+             FROM execution_history
+             ORDER BY started_at DESC
+             LIMIT ?1 OFFSET ?2"
+        ).map_err(|e| e.to_string())?;
+
+        let executions = stmt.query_map(params![limit, offset], |row| {
+            Ok(DbExecutionHistory {
+                id: row.get(0)?,
+                schedule_id: row.get(1)?,
+                workflow_id: row.get(2)?,
+                profile_id: row.get(3)?,
+                profile_name: row.get(4)?,
+                status: row.get(5)?,
+                error: row.get(6)?,
+                started_at: row.get(7)?,
+                finished_at: row.get(8)?,
+                duration: row.get(9)?,
+                steps_completed: row.get(10)?,
+                total_steps: row.get(11)?,
+                logs: row.get(12)?,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        executions.collect::<SqlResult<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    pub fn get_executions_by_schedule(&self, schedule_id: &str, limit: i32) -> Result<Vec<DbExecutionHistory>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, schedule_id, workflow_id, profile_id, profile_name,
+                    status, error, started_at, finished_at, duration,
+                    steps_completed, total_steps, logs
+             FROM execution_history
+             WHERE schedule_id = ?1
+             ORDER BY started_at DESC
+             LIMIT ?2"
+        ).map_err(|e| e.to_string())?;
+
+        let executions = stmt.query_map(params![schedule_id, limit], |row| {
+            Ok(DbExecutionHistory {
+                id: row.get(0)?,
+                schedule_id: row.get(1)?,
+                workflow_id: row.get(2)?,
+                profile_id: row.get(3)?,
+                profile_name: row.get(4)?,
+                status: row.get(5)?,
+                error: row.get(6)?,
+                started_at: row.get(7)?,
+                finished_at: row.get(8)?,
+                duration: row.get(9)?,
+                steps_completed: row.get(10)?,
+                total_steps: row.get(11)?,
+                logs: row.get(12)?,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        executions.collect::<SqlResult<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    pub fn get_execution_stats(&self) -> Result<serde_json::Value, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        let total: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM execution_history", [], |row| row.get(0)
+        ).unwrap_or(0);
+
+        let success: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM execution_history WHERE status = 'success'", [], |row| row.get(0)
+        ).unwrap_or(0);
+
+        let failure: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM execution_history WHERE status = 'failure'", [], |row| row.get(0)
+        ).unwrap_or(0);
+
+        let avg_duration: f64 = conn.query_row(
+            "SELECT AVG(duration) FROM execution_history WHERE status = 'success'", [], |row| row.get(0)
+        ).unwrap_or(0.0);
+
+        Ok(serde_json::json!({
+            "total": total,
+            "success": success,
+            "failure": failure,
+            "successRate": if total > 0 { (success as f64 / total as f64 * 100.0).round() } else { 0.0 },
+            "avgDuration": avg_duration.round()
+        }))
+    }
+
+    pub fn delete_old_executions(&self, days: i32) -> Result<i32, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        let deleted = conn.execute(
+            "DELETE FROM execution_history WHERE datetime(started_at) < datetime('now', ?1)",
+            params![format!("-{} days", days)],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(deleted as i32)
     }
 }
 

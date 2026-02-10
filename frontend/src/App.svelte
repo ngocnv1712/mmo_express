@@ -2,16 +2,15 @@
   import { fade, fly } from 'svelte/transition';
   import ProfileList from './lib/ProfileList.svelte';
   import SessionList from './lib/SessionList.svelte';
-  import ProxyList from './lib/ProxyList.svelte';
   import AutomationBuilder from './lib/automation/AutomationBuilder.svelte';
   import Settings from './lib/Settings.svelte';
+  import Dialog from './lib/Dialog.svelte';
 
   let currentTab = 'profiles';
 
   const tabs = [
     { id: 'profiles', label: 'Profiles', icon: 'user' },
     { id: 'sessions', label: 'Sessions', icon: 'play' },
-    { id: 'proxies', label: 'Proxies', icon: 'globe' },
     { id: 'workflows', label: 'Workflows', icon: 'flow' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
@@ -50,6 +49,10 @@
                 <path d="M2 12h20"/>
                 <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
               </svg>
+            {:else if tab.icon === 'puzzle'}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.315 8.685a.98.98 0 0 1 .837-.276c.47.07.802.48.968.925a2.501 2.501 0 1 0 3.214-3.214c-.446-.166-.855-.497-.925-.968a.979.979 0 0 1 .276-.837l1.61-1.61a2.404 2.404 0 0 1 1.705-.707c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/>
+              </svg>
             {:else if tab.icon === 'flow'}
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="3" y="3" width="6" height="6" rx="1"/>
@@ -85,6 +88,8 @@
           <SessionList />
         {:else if currentTab === 'proxies'}
           <ProxyList />
+        {:else if currentTab === 'extensions'}
+          <ExtensionList />
         {:else if currentTab === 'workflows'}
           <AutomationBuilder />
         {:else if currentTab === 'settings'}
@@ -94,6 +99,9 @@
     {/key}
   </main>
 </div>
+
+<!-- Global Dialog Component -->
+<Dialog />
 
 <style>
   :global(*) {

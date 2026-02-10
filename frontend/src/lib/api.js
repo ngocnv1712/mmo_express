@@ -96,6 +96,25 @@ async function invoke(cmd, args = {}) {
       return mockDb.workflows;
     case 'db_get_groups':
       return mockDb.groups;
+
+    // Extension commands - call sidecar HTTP API
+    case 'list_extensions':
+      return await callSidecar('listExtensions');
+    case 'import_extension':
+      return await callSidecar('importExtension', { sourcePath: args.sourcePath, extensionId: args.extensionId });
+    case 'import_extension_crx':
+      return await callSidecar('importExtensionCRX', { crxPath: args.crxPath });
+    case 'remove_extension':
+      return await callSidecar('removeExtension', { extensionId: args.extensionId });
+    case 'download_and_install_extension':
+      return await callSidecar('downloadAndInstallExtension', { webstoreId: args.webstoreId });
+    case 'enable_extension':
+      return await callSidecar('enableExtension', { extensionId: args.extensionId });
+    case 'disable_extension':
+      return await callSidecar('disableExtension', { extensionId: args.extensionId });
+    case 'toggle_extension':
+      return await callSidecar('toggleExtension', { extensionId: args.extensionId });
+
     default:
       console.warn(`[Browser] Command not available: ${cmd}`);
       return { success: false, error: 'Not available in browser' };
@@ -223,6 +242,38 @@ export async function importExtensionCRX(crxPath) {
  */
 export async function removeExtension(extensionId) {
   return await invoke('remove_extension', { extensionId });
+}
+
+/**
+ * Download and install extension from Chrome Web Store
+ * @param {string} webstoreId - Chrome Web Store extension ID
+ */
+export async function downloadAndInstallExtension(webstoreId) {
+  return await invoke('download_and_install_extension', { webstoreId });
+}
+
+/**
+ * Enable extension
+ * @param {string} extensionId - Extension ID
+ */
+export async function enableExtension(extensionId) {
+  return await invoke('enable_extension', { extensionId });
+}
+
+/**
+ * Disable extension
+ * @param {string} extensionId - Extension ID
+ */
+export async function disableExtension(extensionId) {
+  return await invoke('disable_extension', { extensionId });
+}
+
+/**
+ * Toggle extension enabled state
+ * @param {string} extensionId - Extension ID
+ */
+export async function toggleExtension(extensionId) {
+  return await invoke('toggle_extension', { extensionId });
 }
 
 // ============ Advanced Cookie API ============

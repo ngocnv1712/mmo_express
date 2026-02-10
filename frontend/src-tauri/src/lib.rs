@@ -7,7 +7,7 @@ use tauri::State;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod database;
-use database::{Database, DbProfile, DbProxy, DbWorkflow, DbGroup};
+use database::{Database, DbProfile, DbProxy, DbWorkflow, DbGroup, DbSchedule, DbExecutionHistory};
 
 // ============ Types ============
 
@@ -258,6 +258,12 @@ fn remove_extension(state: State<SidecarState>, extension_id: String) -> Result<
     send_command(&state, "removeExtension", args)
 }
 
+#[tauri::command]
+fn download_and_install_extension(state: State<SidecarState>, webstore_id: String) -> Result<Value, String> {
+    let args = vec![json!(webstore_id)];
+    send_command(&state, "downloadAndInstallExtension", args)
+}
+
 // ============ Advanced Cookie Commands ============
 
 #[tauri::command]
@@ -451,6 +457,60 @@ fn db_delete_group(state: State<DatabaseState>, id: String) -> Result<(), String
     state.db.delete_group(&id)
 }
 
+// ============ Database Commands - Schedules ============
+
+#[tauri::command]
+fn db_create_schedule(state: State<DatabaseState>, schedule: DbSchedule) -> Result<DbSchedule, String> {
+    state.db.create_schedule(&schedule)
+}
+
+#[tauri::command]
+fn db_get_schedules(state: State<DatabaseState>) -> Result<Vec<DbSchedule>, String> {
+    state.db.get_schedules()
+}
+
+#[tauri::command]
+fn db_get_schedule(state: State<DatabaseState>, id: String) -> Result<Option<DbSchedule>, String> {
+    state.db.get_schedule(&id)
+}
+
+#[tauri::command]
+fn db_update_schedule(state: State<DatabaseState>, schedule: DbSchedule) -> Result<(), String> {
+    state.db.update_schedule(&schedule)
+}
+
+#[tauri::command]
+fn db_delete_schedule(state: State<DatabaseState>, id: String) -> Result<(), String> {
+    state.db.delete_schedule(&id)
+}
+
+// ============ Database Commands - Execution History ============
+
+#[tauri::command]
+fn db_create_execution(state: State<DatabaseState>, execution: DbExecutionHistory) -> Result<DbExecutionHistory, String> {
+    state.db.create_execution(&execution)
+}
+
+#[tauri::command]
+fn db_get_executions(state: State<DatabaseState>, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<DbExecutionHistory>, String> {
+    state.db.get_executions(limit.unwrap_or(100), offset.unwrap_or(0))
+}
+
+#[tauri::command]
+fn db_get_executions_by_schedule(state: State<DatabaseState>, schedule_id: String, limit: Option<i32>) -> Result<Vec<DbExecutionHistory>, String> {
+    state.db.get_executions_by_schedule(&schedule_id, limit.unwrap_or(50))
+}
+
+#[tauri::command]
+fn db_get_execution_stats(state: State<DatabaseState>) -> Result<Value, String> {
+    state.db.get_execution_stats()
+}
+
+#[tauri::command]
+fn db_delete_old_executions(state: State<DatabaseState>, days: i32) -> Result<i32, String> {
+    state.db.delete_old_executions(days)
+}
+
 // ============ App Entry ============
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -477,6 +537,7 @@ pub fn run() {
             import_extension,
             import_extension_crx,
             remove_extension,
+            download_and_install_extension,
             // Advanced Cookies
             export_cookies_format,
             import_cookies_string,
@@ -517,6 +578,18 @@ pub fn run() {
             db_get_groups,
             db_update_group,
             db_delete_group,
+            // Database - Schedules
+            db_create_schedule,
+            db_get_schedules,
+            db_get_schedule,
+            db_update_schedule,
+            db_delete_schedule,
+            // Database - Execution History
+            db_create_execution,
+            db_get_executions,
+            db_get_executions_by_schedule,
+            db_get_execution_stats,
+            db_delete_old_executions,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { showAlert, showConfirm } from '../stores/dialog.js';
 
   export let variables = [];
   export let show = false;
@@ -53,7 +54,7 @@
 
     // Check for duplicate names
     if (variables.some(v => v.name === newVariable.name.trim())) {
-      alert('Variable name already exists');
+      showAlert('Variable name already exists', { title: 'Duplicate Name', variant: 'warning' });
       return;
     }
 
@@ -98,8 +99,13 @@
     editingVariable = null;
   }
 
-  function deleteVariable(id) {
-    if (!confirm('Delete this variable?')) return;
+  async function deleteVariable(id) {
+    const confirmed = await showConfirm('Delete this variable?', {
+      title: 'Delete Variable',
+      variant: 'danger',
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
     variables = variables.filter(v => v.id !== id);
     dispatch('change', variables);
   }

@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import ScheduleEditor from './ScheduleEditor.svelte';
+  import { showConfirm } from './stores/dialog.js';
 
   export let sidecarUrl = 'http://localhost:3456';
 
@@ -115,7 +116,12 @@
   }
 
   async function deleteSchedule(schedule) {
-    if (!confirm(`Delete schedule "${schedule.name}"?`)) return;
+    const confirmed = await showConfirm(`Delete schedule "${schedule.name}"?`, {
+      title: 'Delete Schedule',
+      variant: 'danger',
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
 
     try {
       const result = await sendCommand('deleteSchedule', { id: schedule.id });

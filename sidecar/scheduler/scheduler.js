@@ -1,12 +1,15 @@
 /**
  * Scheduler Service
  * Manages scheduled workflow executions
+ * Now uses SQLite instead of JSON files
  */
 
 const fs = require('fs').promises;
 const path = require('path');
 const { getNextRun, describeCron, validateCron, CRON_PRESETS } = require('./cronParser');
+const { getDB } = require('../database');
 
+// Legacy JSON file path (for fallback/migration)
 const SCHEDULES_FILE = path.join(__dirname, '../../data/schedules.json');
 
 class Scheduler {
@@ -107,26 +110,35 @@ class Scheduler {
       schedule.lastRun = new Date().toISOString();
       schedule.nextRun = getNextRun(schedule.cron)?.toISOString() || null;
       schedule.lastStatus = 'running';
+      schedule.runCount = (schedule.runCount || 0) + 1;
 
-      await this.saveSchedules();
+      this.persistSchedule(schedule);
 
       // Execute via callback if provided
       if (this.onExecute) {
         const result = await this.onExecute(schedule);
         schedule.lastStatus = result.success ? 'success' : 'failed';
         schedule.lastError = result.error || null;
+
+        // Update counts
+        if (result.success) {
+          schedule.successCount = (schedule.successCount || 0) + 1;
+        } else {
+          schedule.failureCount = (schedule.failureCount || 0) + 1;
+        }
       } else {
         // Emit event for external handling
         schedule.lastStatus = 'pending';
       }
 
-      await this.saveSchedules();
+      this.persistSchedule(schedule);
 
       this.logger.error(`[SCHEDULER] Completed: ${schedule.name} - ${schedule.lastStatus}`);
     } catch (error) {
       schedule.lastStatus = 'failed';
       schedule.lastError = error.message;
-      await this.saveSchedules();
+      schedule.failureCount = (schedule.failureCount || 0) + 1;
+      this.persistSchedule(schedule);
       this.logger.error(`[SCHEDULER] Failed: ${schedule.name} - ${error.message}`);
     }
   }
@@ -156,6 +168,13 @@ class Scheduler {
       runOnStart: data.runOnStart || false,
       maxRetries: data.maxRetries || 0,
       timeout: data.timeout || 300000, // 5 minutes default
+      // Parallel execution config
+      parallelConfig: data.parallelConfig || {
+        maxConcurrent: 3,
+        queueMode: 'fifo',
+        retryStrategy: 'none',
+        maxRetries: 0,
+      },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       lastRun: null,
@@ -168,7 +187,7 @@ class Scheduler {
     };
 
     this.schedules.set(id, schedule);
-    await this.saveSchedules();
+    this.persistSchedule(schedule);
 
     this.logger.error(`[SCHEDULER] Created: ${schedule.name} (${schedule.cronDescription})`);
 
@@ -204,10 +223,11 @@ class Scheduler {
     if (data.runOnStart !== undefined) schedule.runOnStart = data.runOnStart;
     if (data.maxRetries !== undefined) schedule.maxRetries = data.maxRetries;
     if (data.timeout !== undefined) schedule.timeout = data.timeout;
+    if (data.parallelConfig !== undefined) schedule.parallelConfig = data.parallelConfig;
 
     schedule.updatedAt = new Date().toISOString();
 
-    await this.saveSchedules();
+    this.persistSchedule(schedule);
 
     this.logger.error(`[SCHEDULER] Updated: ${schedule.name}`);
 
@@ -224,7 +244,14 @@ class Scheduler {
     }
 
     this.schedules.delete(id);
-    await this.saveSchedules();
+
+    // Delete from database
+    try {
+      const db = getDB();
+      db.deleteSchedule(id);
+    } catch (error) {
+      this.logger.error('[SCHEDULER] Error deleting from DB:', error.message);
+    }
 
     this.logger.error(`[SCHEDULER] Deleted: ${schedule.name}`);
 
@@ -276,21 +303,21 @@ class Scheduler {
   }
 
   /**
-   * Load schedules from file
+   * Load schedules from SQLite database
    */
   async loadSchedules() {
     try {
-      // Ensure data directory exists
-      await fs.mkdir(path.dirname(SCHEDULES_FILE), { recursive: true });
-
-      const data = await fs.readFile(SCHEDULES_FILE, 'utf-8');
-      const schedules = JSON.parse(data);
+      const db = getDB();
+      const schedules = db.getSchedules();
 
       this.schedules.clear();
       for (const schedule of schedules) {
         // Recalculate next run time
         schedule.nextRun = getNextRun(schedule.cron)?.toISOString() || null;
         this.schedules.set(schedule.id, schedule);
+
+        // Update next run in database
+        db.updateScheduleNextRun(schedule.id, schedule.nextRun);
 
         // Register workflow if callback provided and workflow is stored
         if (this.onScheduleLoaded && schedule.workflow) {
@@ -302,25 +329,67 @@ class Scheduler {
         }
       }
 
-      this.logger.error(`[SCHEDULER] Loaded ${this.schedules.size} schedules`);
+      this.logger.error(`[SCHEDULER] Loaded ${this.schedules.size} schedules from SQLite`);
     } catch (error) {
-      if (error.code !== 'ENOENT') {
-        this.logger.error('[SCHEDULER] Error loading schedules:', error.message);
-      }
-      // File doesn't exist yet, start with empty
+      this.logger.error('[SCHEDULER] Error loading schedules:', error.message);
+      // Try fallback to JSON if SQLite fails
+      await this.loadSchedulesFromJSON();
     }
   }
 
   /**
-   * Save schedules to file
+   * Fallback: Load schedules from JSON file (legacy)
+   */
+  async loadSchedulesFromJSON() {
+    try {
+      const data = await fs.readFile(SCHEDULES_FILE, 'utf-8');
+      const schedules = JSON.parse(data);
+
+      this.schedules.clear();
+      for (const schedule of schedules) {
+        schedule.nextRun = getNextRun(schedule.cron)?.toISOString() || null;
+        this.schedules.set(schedule.id, schedule);
+
+        if (this.onScheduleLoaded && schedule.workflow) {
+          try {
+            this.onScheduleLoaded(schedule);
+          } catch (err) {
+            this.logger.error(`[SCHEDULER] Failed to register workflow for ${schedule.name}:`, err.message);
+          }
+        }
+      }
+
+      this.logger.error(`[SCHEDULER] Loaded ${this.schedules.size} schedules from JSON (fallback)`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        this.logger.error('[SCHEDULER] Error loading JSON schedules:', error.message);
+      }
+    }
+  }
+
+  /**
+   * Save schedule to SQLite database
    */
   async saveSchedules() {
+    // Now each update is saved individually via updateSchedule/createSchedule
+    // This method is kept for compatibility but does nothing
+    // Individual schedule operations already persist to SQLite
+  }
+
+  /**
+   * Persist a single schedule to database
+   */
+  persistSchedule(schedule) {
     try {
-      await fs.mkdir(path.dirname(SCHEDULES_FILE), { recursive: true });
-      const data = JSON.stringify(Array.from(this.schedules.values()), null, 2);
-      await fs.writeFile(SCHEDULES_FILE, data, 'utf-8');
+      const db = getDB();
+      const existing = db.getSchedule(schedule.id);
+      if (existing) {
+        db.updateSchedule(schedule);
+      } else {
+        db.createSchedule(schedule);
+      }
     } catch (error) {
-      this.logger.error('[SCHEDULER] Error saving schedules:', error.message);
+      this.logger.error('[SCHEDULER] Error persisting schedule:', error.message);
     }
   }
 

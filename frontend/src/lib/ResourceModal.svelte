@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { getPlatforms, getProfileResources, createResource, updateResource, deleteResource } from './api.js';
+  import { showAlert, showConfirm } from './stores/dialog.js';
 
   export let profileId = '';
   export let profileName = '';
@@ -161,13 +162,18 @@
       cancelForm();
     } catch (e) {
       console.error('Failed to save resource:', e);
-      alert('Failed to save: ' + e);
+      showAlert('Failed to save: ' + e, { title: 'Save Failed', variant: 'danger' });
     }
     loading = false;
   }
 
   async function handleDeleteResource(id) {
-    if (!confirm('Are you sure you want to delete this resource?')) return;
+    const confirmed = await showConfirm('Are you sure you want to delete this resource?', {
+      title: 'Delete Resource',
+      variant: 'danger',
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
 
     loading = true;
     try {

@@ -55,6 +55,8 @@ class WorkflowManager {
         id,
         name: workflow.name,
         description: workflow.description,
+        tags: workflow.tags || [],
+        steps: workflow.steps || [],
         stepsCount: workflow.steps?.length || 0,
         registeredAt: workflow.registeredAt,
       });

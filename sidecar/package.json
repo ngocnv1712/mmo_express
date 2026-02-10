@@ -6,22 +6,33 @@
   "bin": "index.js",
   "scripts": {
     "start": "node index.js",
+    "dev": "nodemon --watch . --ext js,json --ignore node_modules --ignore profiles --ignore extensions index.js",
     "build": "pkg . --targets node18-linux-x64,node18-win-x64,node18-macos-x64 --output dist/sidecar"
   },
   "pkg": {
     "assets": [],
-    "targets": ["node18-linux-x64", "node18-win-x64", "node18-macos-x64"]
+    "targets": [
+      "node18-linux-x64",
+      "node18-win-x64",
+      "node18-macos-x64"
+    ]
   },
-  "keywords": ["playwright", "automation", "mmo"],
+  "keywords": [
+    "playwright",
+    "automation",
+    "mmo"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
     "playwright": "^1.58.2",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "nodemon": "^3.1.11",
     "pkg": "^5.8.0"
   }
 }

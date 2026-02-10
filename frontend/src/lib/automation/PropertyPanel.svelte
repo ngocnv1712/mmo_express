@@ -33,6 +33,16 @@
     onBlockUpdate(newBlock);
   }
 
+  function handleNameChange(newName) {
+    if (!block) return;
+
+    const newBlock = {
+      ...block,
+      name: newName
+    };
+    onBlockUpdate(newBlock);
+  }
+
   function getFieldValue(key) {
     return block?.config?.[key] ?? '';
   }
@@ -42,7 +52,13 @@
   {#if block}
     <div class="panel-header">
       <span class="block-icon">{block.icon || '📦'}</span>
-      <span class="block-name">{block.name || block.type}</span>
+      <input
+        type="text"
+        class="block-name-input"
+        value={block.name || block.type}
+        on:input={(e) => handleNameChange(e.target.value)}
+        placeholder="Enter step name..."
+      />
     </div>
 
     {#if actionSchema?.description}
@@ -247,10 +263,28 @@
     font-size: 18px;
   }
 
-  .block-name {
+  .block-name-input {
+    flex: 1;
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary, #fff);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 4px 8px;
+    margin: -4px 0;
+    transition: all 0.15s;
+  }
+
+  .block-name-input:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--border-color, #333);
+  }
+
+  .block-name-input:focus {
+    outline: none;
+    background: var(--bg-primary, #121212);
+    border-color: var(--accent-color, #3b82f6);
   }
 
   .description {
