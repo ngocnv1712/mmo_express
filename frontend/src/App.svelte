@@ -1,13 +1,18 @@
 <script>
   import { fade, fly } from 'svelte/transition';
+  import { onMount } from 'svelte';
   import ProfileList from './lib/ProfileList.svelte';
   import SessionList from './lib/SessionList.svelte';
   import AutomationBuilder from './lib/automation/AutomationBuilder.svelte';
   import WarmupDashboard from './lib/warmup/WarmupDashboard.svelte';
   import Settings from './lib/Settings.svelte';
   import Dialog from './lib/Dialog.svelte';
+  import { getChromiumStatus, downloadChromium } from './lib/api.js';
 
   let currentTab = 'profiles';
+  let showChromiumModal = false;
+  let chromiumDownloading = false;
+  let chromiumError = '';
 
   const tabs = [
     { id: 'profiles', label: 'Profiles', icon: 'user' },
@@ -16,6 +21,34 @@
     { id: 'warmup', label: 'Warm-up', icon: 'fire' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
+
+  // Check Chromium on startup
+  onMount(async () => {
+    try {
+      const status = await getChromiumStatus();
+      if (status && !status.installed) {
+        showChromiumModal = true;
+      }
+    } catch (e) {
+      console.error('Failed to check Chromium status:', e);
+    }
+  });
+
+  async function handleDownloadChromium() {
+    chromiumDownloading = true;
+    chromiumError = '';
+    try {
+      const result = await downloadChromium();
+      if (result.success) {
+        showChromiumModal = false;
+      } else {
+        chromiumError = result.error || 'Download failed';
+      }
+    } catch (e) {
+      chromiumError = e.message;
+    }
+    chromiumDownloading = false;
+  }
 </script>
 
 <div class="app">
@@ -111,6 +144,45 @@
 
 <!-- Global Dialog Component -->
 <Dialog />
+
+<!-- Chromium Download Modal -->
+{#if showChromiumModal}
+  <div class="chromium-modal-overlay" transition:fade={{ duration: 200 }}>
+    <div class="chromium-modal">
+      <div class="chromium-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"/>
+          <circle cx="12" cy="12" r="4"/>
+          <line x1="21.17" y1="8" x2="12" y2="8"/>
+          <line x1="3.95" y1="6.06" x2="8.54" y2="14"/>
+          <line x1="10.88" y1="21.94" x2="15.46" y2="14"/>
+        </svg>
+      </div>
+      <h2>Browser Required</h2>
+      <p>MMO Express needs to download Chromium browser (~300MB) to run profiles.</p>
+
+      {#if chromiumError}
+        <div class="chromium-error">{chromiumError}</div>
+      {/if}
+
+      <div class="chromium-actions">
+        {#if chromiumDownloading}
+          <div class="chromium-progress">
+            <div class="spinner"></div>
+            <span>Downloading Chromium...</span>
+          </div>
+        {:else}
+          <button class="btn-primary" on:click={handleDownloadChromium}>
+            Download Now
+          </button>
+          <button class="btn-secondary" on:click={() => showChromiumModal = false}>
+            Later
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   :global(*) {
@@ -293,5 +365,102 @@
   .placeholder h2 {
     margin-bottom: 8px;
     color: var(--text-primary);
+  }
+
+  /* Chromium Modal */
+  .chromium-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+
+  .chromium-modal {
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    padding: 32px;
+    max-width: 400px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+
+  .chromium-icon {
+    margin-bottom: 16px;
+    color: var(--accent-color);
+  }
+
+  .chromium-modal h2 {
+    margin-bottom: 12px;
+    color: var(--text-primary);
+  }
+
+  .chromium-modal p {
+    color: var(--text-secondary);
+    margin-bottom: 24px;
+    line-height: 1.5;
+  }
+
+  .chromium-error {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 14px;
+  }
+
+  .chromium-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+  }
+
+  .chromium-actions .btn-primary {
+    background: var(--accent-color);
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+
+  .chromium-actions .btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  .chromium-actions .btn-secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .chromium-progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-secondary);
+  }
+
+  .spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--bg-tertiary);
+    border-top-color: var(--accent-color);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 </style>
