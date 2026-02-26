@@ -112,6 +112,12 @@ async function invoke(cmd, args = {}) {
     case 'toggle_extension':
       return await callSidecar('toggleExtension', { extensionId: args.extensionId });
 
+    // Browser management
+    case 'get_chromium_status':
+      return await callSidecar('getChromiumStatus');
+    case 'download_chromium':
+      return await callSidecar('downloadChromium');
+
     // System info
     case 'get_system_info':
       return await callSidecar('getSystemInfo');
@@ -281,6 +287,22 @@ export async function disableExtension(extensionId) {
  */
 export async function toggleExtension(extensionId) {
   return await invoke('toggle_extension', { extensionId });
+}
+
+// ============ Browser Management API ============
+
+/**
+ * Get Chromium installation status
+ */
+export async function getChromiumStatus() {
+  return await invoke('get_chromium_status', {});
+}
+
+/**
+ * Download and install Chromium
+ */
+export async function downloadChromium() {
+  return await invoke('download_chromium', {});
 }
 
 // ============ Advanced Cookie API ============

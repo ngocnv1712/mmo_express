@@ -15,6 +15,45 @@ const DATA_DIR = path.join(process.cwd(), 'data');
 const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 const PROFILES_DIR = path.join(DATA_DIR, 'profiles'); // Browser user data for persistent contexts
 
+// Browser downloader for packaged apps
+const browserDownloader = require('./browser/downloader');
+
+/**
+ * Ensure Chromium is installed (auto-download if missing)
+ */
+async function ensureChromiumInstalled() {
+  if (browserDownloader.isChromiumInstalled()) {
+    console.error('[BROWSER] Chromium found');
+    return true;
+  }
+
+  console.error('[BROWSER] Chromium not found, will download on first use');
+  return false;
+}
+
+/**
+ * Download Chromium (called from frontend or on first browser launch)
+ */
+async function downloadChromium() {
+  try {
+    await browserDownloader.downloadChromium();
+    return { success: true, path: browserDownloader.getChromiumPath() };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Check Chromium status
+ */
+function getChromiumStatus() {
+  return {
+    installed: browserDownloader.isChromiumInstalled(),
+    path: browserDownloader.isChromiumInstalled() ? browserDownloader.getChromiumPath() : null,
+    revision: browserDownloader.CHROMIUM_REVISION
+  };
+}
+
 // UUID v4 generator
 function uuidv4() {
   return crypto.randomUUID();
@@ -2855,6 +2894,10 @@ const httpServer = http.createServer(async (req, res) => {
           result = await handler(params.extensionId);
         } else if (action === 'init') {
           result = await handler(params);
+        } else if (action === 'downloadChromium') {
+          result = await handler();
+        } else if (action === 'getChromiumStatus') {
+          result = handler();
         } else if (action === 'geoLookup') {
           result = await handler(params.ip);
         } else if (action === 'runAntidetectTest' || action === 'runQuickBenchmark') {
@@ -3014,6 +3057,10 @@ const handlers = {
   disableExtension,
   toggleExtension,
 
+  // Browser management
+  downloadChromium,
+  getChromiumStatus,
+
   // Utilities
   evaluate,
   screenshot,
@@ -3169,4 +3216,10 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-console.error('[SIDECAR] Ready - Multi-browser support enabled');
+// Check and install Chromium if needed
+ensureChromiumInstalled().then(() => {
+  console.error('[SIDECAR] Ready - Multi-browser support enabled');
+}).catch(err => {
+  console.error('[SIDECAR] Warning:', err.message);
+  console.error('[SIDECAR] Ready - Multi-browser support enabled (Chromium may be missing)');
+});

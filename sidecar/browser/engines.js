@@ -8,6 +8,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
+const os = require('os');
+const browserDownloader = require('./downloader');
 
 /**
  * Find an available port for remote debugging
@@ -34,48 +36,31 @@ async function findAvailablePort(startPort = 9222) {
 async function launchStealthChrome(userDataDir, options = {}) {
   const port = await findAvailablePort();
 
-  // Find Chrome/Chromium executable
-  // Prefer Chromium first because --load-extension is disabled in Google Chrome
-  const homeDir = process.env.HOME || '/home/' + process.env.USER;
-  const playwrightDir = `${homeDir}/.cache/ms-playwright`;
-
-  // Find Playwright Chromium dynamically
-  let playwrightChromium = null;
-  if (fs.existsSync(playwrightDir)) {
-    const dirs = fs.readdirSync(playwrightDir).filter(d => d.startsWith('chromium-'));
-    for (const dir of dirs.sort().reverse()) { // Use latest version
-      const possiblePaths = [
-        path.join(playwrightDir, dir, 'chrome-linux64', 'chrome'),
-        path.join(playwrightDir, dir, 'chrome-linux', 'chrome'),
-      ];
-      for (const p of possiblePaths) {
-        if (fs.existsSync(p)) {
-          playwrightChromium = p;
-          break;
-        }
-      }
-      if (playwrightChromium) break;
-    }
-  }
-
-  const chromePaths = [
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/snap/bin/chromium',
-    playwrightChromium, // Playwright's Chromium (supports --load-extension)
-    // Google Chrome (--load-extension is disabled)
-    '/opt/google/chrome/chrome',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-  ].filter(Boolean);
-
+  // Get Chromium path from downloader (handles auto-download)
   let chromePath = null;
-  console.error(`[ENGINE] Searching for browser, Playwright Chromium: ${playwrightChromium}`);
-  for (const p of chromePaths) {
-    if (fs.existsSync(p)) {
-      chromePath = p;
-      console.error(`[ENGINE] Found browser: ${chromePath}`);
-      break;
+
+  // First check if Chromium is installed via our downloader
+  if (browserDownloader.isChromiumInstalled()) {
+    chromePath = browserDownloader.getChromiumPath();
+    console.error(`[ENGINE] Using downloaded Chromium: ${chromePath}`);
+  } else {
+    // Fallback to system browsers (prefer Chromium over Chrome)
+    const systemPaths = [
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/snap/bin/chromium',
+      // Google Chrome (--load-extension is disabled, but better than nothing)
+      '/opt/google/chrome/chrome',
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+    ];
+
+    for (const p of systemPaths) {
+      if (fs.existsSync(p)) {
+        chromePath = p;
+        console.error(`[ENGINE] Using system browser: ${chromePath}`);
+        break;
+      }
     }
   }
 
