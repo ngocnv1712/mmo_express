@@ -212,7 +212,7 @@
   let profileDisplayLimit = 50;
   let profileFilterBrowser = '';
   let profileFilterOS = '';
-  let profileFilterGroup = '';
+  let profileFilterTag = '';
   let profileFilterStatus = '';
   let cronPresets = [
     { value: '* * * * *', label: 'Every minute' },
@@ -455,7 +455,7 @@
       profileDisplayLimit = 50;
       profileFilterBrowser = '';
       profileFilterOS = '';
-      profileFilterGroup = '';
+      profileFilterTag = '';
       profileFilterStatus = '';
 
       // Load existing schedule if any
@@ -559,7 +559,9 @@
   // Get unique values for filter dropdowns
   $: availableBrowsers = [...new Set(profiles.map(p => p.browserType).filter(Boolean))];
   $: availableOS = [...new Set(profiles.map(p => p.os).filter(Boolean))];
-  $: availableGroups = [...new Set(profiles.map(p => p.groupId).filter(Boolean))];
+  $: availableTags = [...new Set(profiles.flatMap(p => {
+    try { return JSON.parse(p.tags || '[]'); } catch { return []; }
+  }).filter(Boolean))];
   $: availableStatuses = [...new Set(profiles.map(p => p.status).filter(Boolean))];
 
   // Parse tags from profiles
@@ -581,7 +583,7 @@
       const matchText = (p.name || '').toLowerCase().includes(query) ||
              (p.browserType || '').toLowerCase().includes(query) ||
              (p.notes || '').toLowerCase().includes(query) ||
-             (p.groupId || '').toLowerCase().includes(query);
+             (p.tags || '').toLowerCase().includes(query);
       if (!matchText) return false;
     }
 
@@ -591,8 +593,13 @@
     // OS filter
     if (profileFilterOS && p.os !== profileFilterOS) return false;
 
-    // Group filter
-    if (profileFilterGroup && p.groupId !== profileFilterGroup) return false;
+    // Tag filter
+    if (profileFilterTag) {
+      try {
+        const tags = JSON.parse(p.tags || '[]');
+        if (!tags.includes(profileFilterTag)) return false;
+      } catch { return false; }
+    }
 
     // Status filter
     if (profileFilterStatus && p.status !== profileFilterStatus) return false;
@@ -1621,11 +1628,11 @@
                   </select>
                 {/if}
 
-                {#if availableGroups.length > 0}
-                  <select bind:value={profileFilterGroup} class="filter-select">
-                    <option value="">All Groups</option>
-                    {#each availableGroups as group}
-                      <option value={group}>{group}</option>
+                {#if availableTags.length > 0}
+                  <select bind:value={profileFilterTag} class="filter-select">
+                    <option value="">All Tags</option>
+                    {#each availableTags as tag}
+                      <option value={tag}>{tag}</option>
                     {/each}
                   </select>
                 {/if}
@@ -1639,11 +1646,11 @@
                   </select>
                 {/if}
 
-                {#if profileFilterBrowser || profileFilterOS || profileFilterGroup || profileFilterStatus}
+                {#if profileFilterBrowser || profileFilterOS || profileFilterTag || profileFilterStatus}
                   <button class="btn-clear-filters" on:click={() => {
                     profileFilterBrowser = '';
                     profileFilterOS = '';
-                    profileFilterGroup = '';
+                    profileFilterTag = '';
                     profileFilterStatus = '';
                   }}>
                     Clear filters

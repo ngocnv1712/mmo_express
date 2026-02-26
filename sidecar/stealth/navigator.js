@@ -5,20 +5,86 @@
 
 function buildNavigatorScript(profile) {
   return `
-// ======== NAVIGATOR SPOOFING ========
+// ======== WEBDRIVER SPOOFING ========
+// Hide navigator.webdriver to avoid automation detection
+Object.defineProperty(navigator, 'webdriver', {
+  get: () => undefined,
+  configurable: true
+});
 
-// Remove webdriver property
+// Remove from prototype chain
+try { delete navigator.__proto__.webdriver; } catch(e) {}
+
+// Also ensure it returns false if accessed differently
+if (Object.getOwnPropertyDescriptor(navigator, 'webdriver')) {
+  Object.defineProperty(navigator, 'webdriver', {
+    get: () => false,
+    configurable: true
+  });
+}
+
+console.debug('[Stealth] Navigator: webdriver hidden via JS injection');
+`;
+}
+
+function buildNavigatorScriptFull(profile) {
+  const userAgent = profile.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  const platform = profile.platform || 'Win32';
+  const browserType = profile.browserType || 'chrome';
+
+  // Determine vendor based on browser type
+  const vendor = browserType === 'firefox' ? '' : 'Google Inc.';
+  const productSub = browserType === 'firefox' ? '20100101' : '20030107';
+
+  // Extract appVersion from userAgent
+  const appVersion = userAgent.replace('Mozilla/', '');
+
+  return `
+// ======== NAVIGATOR SPOOFING (FULL) ========
+
+const BROWSER_TYPE = '${browserType}';
+const USER_AGENT = '${userAgent}';
+const PLATFORM = '${platform}';
+const VENDOR = '${vendor}';
+const PRODUCT_SUB = '${productSub}';
+const APP_VERSION = '${appVersion}';
+
+// Remove webdriver property (critical for automation detection)
 Object.defineProperty(navigator, 'webdriver', {
   get: () => undefined,
   configurable: true
 });
 
 // Remove automation properties
-delete navigator.__proto__.webdriver;
+try { delete navigator.__proto__.webdriver; } catch(e) {}
+
+// Override userAgent (CRITICAL - must match HTTP header)
+Object.defineProperty(navigator, 'userAgent', {
+  get: () => USER_AGENT,
+  configurable: true
+});
+
+// Override appVersion (derived from userAgent)
+Object.defineProperty(navigator, 'appVersion', {
+  get: () => APP_VERSION,
+  configurable: true
+});
+
+// Override vendor (Google Inc. for Chrome, empty for Firefox)
+Object.defineProperty(navigator, 'vendor', {
+  get: () => VENDOR,
+  configurable: true
+});
+
+// Override productSub
+Object.defineProperty(navigator, 'productSub', {
+  get: () => PRODUCT_SUB,
+  configurable: true
+});
 
 // Override platform
 Object.defineProperty(navigator, 'platform', {
-  get: () => '${profile.platform || 'Win32'}',
+  get: () => PLATFORM,
   configurable: true
 });
 
@@ -48,7 +114,7 @@ Object.defineProperty(navigator, 'language', {
 
 // Override languages
 Object.defineProperty(navigator, 'languages', {
-  get: () => ${JSON.stringify((profile.language || 'en-US,en').split(','))},
+  get: () => Object.freeze(${JSON.stringify((profile.language || 'en-US,en').split(',').map(s => s.trim()))}),
   configurable: true
 });
 
@@ -128,18 +194,116 @@ if (originalQuery) {
   };
 }
 
-// Fix connection info
+// Fix connection info (Network Information API) - use profile-based consistent values
+const connectionRtt = ${profile.connectionRtt || 50};
+const connectionDownlink = ${profile.connectionDownlink || 10};
+const connectionType = '${profile.connectionType || 'wifi'}';
+
 Object.defineProperty(navigator, 'connection', {
-  get: () => ({
-    effectiveType: '4g',
-    rtt: 50,
-    downlink: 10,
-    saveData: false
-  }),
+  get: () => {
+    const conn = {
+      effectiveType: '4g',
+      rtt: connectionRtt,
+      downlink: connectionDownlink,
+      saveData: false,
+      type: connectionType,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      onchange: null
+    };
+    // Make it look like a real NetworkInformation object
+    Object.setPrototypeOf(conn, EventTarget.prototype);
+    return conn;
+  },
   configurable: true
 });
 
-console.debug('[Stealth] Navigator spoofing applied');
+// Battery API - return consistent fake values based on profile
+const batteryLevel = ${profile.batteryLevel || 0.85};
+const batteryCharging = ${profile.batteryCharging !== false};
+
+if (navigator.getBattery) {
+  const fakeBattery = {
+    charging: batteryCharging,
+    chargingTime: batteryCharging ? 0 : Infinity,
+    dischargingTime: batteryCharging ? Infinity : 18000,
+    level: batteryLevel,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    onchargingchange: null,
+    onchargingtimechange: null,
+    ondischargingtimechange: null,
+    onlevelchange: null
+  };
+  Object.setPrototypeOf(fakeBattery, EventTarget.prototype);
+
+  navigator.getBattery = async function() {
+    return fakeBattery;
+  };
+}
+
+// Disable Bluetooth API (fingerprint risk)
+if (navigator.bluetooth) {
+  Object.defineProperty(navigator, 'bluetooth', {
+    get: () => undefined,
+    configurable: true
+  });
+}
+
+// Disable USB API (fingerprint risk)
+if (navigator.usb) {
+  Object.defineProperty(navigator, 'usb', {
+    get: () => undefined,
+    configurable: true
+  });
+}
+
+// Disable Serial API (fingerprint risk)
+if (navigator.serial) {
+  Object.defineProperty(navigator, 'serial', {
+    get: () => undefined,
+    configurable: true
+  });
+}
+
+// Disable HID API
+if (navigator.hid) {
+  Object.defineProperty(navigator, 'hid', {
+    get: () => undefined,
+    configurable: true
+  });
+}
+
+// Override pdfViewerEnabled (Chrome 94+)
+Object.defineProperty(navigator, 'pdfViewerEnabled', {
+  get: () => true,
+  configurable: true
+});
+
+// NOTE: Removed webkitTemporaryStorage override - it triggers incognito detection
+// The storage quota in fake mode doesn't match real storage behavior
+
+// Override keyboard API
+if (navigator.keyboard) {
+  const originalGetLayoutMap = navigator.keyboard.getLayoutMap;
+  if (originalGetLayoutMap) {
+    navigator.keyboard.getLayoutMap = async function() {
+      const map = await originalGetLayoutMap.call(navigator.keyboard);
+      // Return empty map or consistent layout
+      return map;
+    };
+  }
+}
+
+// Override sendBeacon to look normal
+const originalSendBeacon = navigator.sendBeacon;
+if (originalSendBeacon) {
+  navigator.sendBeacon = function(url, data) {
+    return originalSendBeacon.call(navigator, url, data);
+  };
+}
+
+console.debug('[Stealth] Navigator spoofing applied - UserAgent:', USER_AGENT.substring(0, 50) + '...');
 `;
 }
 

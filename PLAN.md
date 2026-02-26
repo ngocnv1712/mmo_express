@@ -346,14 +346,212 @@ RAM: 150MB + (N × 40MB) vs N × 300MB (old way)
 └─────────────────────────────────────────────────────┘
 ```
 
-### Phase 14: Profile Groups
-- [ ] Create/Edit/Delete groups
-- [ ] Assign profiles to groups
-- [ ] Launch all profiles in group
-- [ ] Filter profiles by group
-- [ ] Group colors/icons
+### Phase 14: Profile Groups (Đã bỏ)
+~~- [ ] Create/Edit/Delete groups~~
+~~- [ ] Assign profiles to groups~~
 
-### Phase 15: Enterprise Features
+### Phase 15: Account Warm-up 🆕
+Tự động "làm nóng" tài khoản mới để tránh bị ban.
+
+#### 15.1 Warm-up Schedule Schema
+```javascript
+{
+  id: 'warmup-xxx',
+  name: 'Facebook Warm-up 21 ngày',
+  platform: 'facebook',           // facebook, tiktok, google, instagram, etc.
+  totalDays: 21,                  // Tổng số ngày warm-up
+  phases: [
+    {
+      name: 'Phase 1 - Làm quen',
+      days: [1, 7],               // Ngày 1-7
+      dailyActions: {
+        login: true,
+        scrollFeed: { min: 5, max: 10 },      // phút
+        like: { min: 2, max: 5 },             // số lượng
+        comment: { min: 0, max: 1 },
+        post: { min: 0, max: 0 },
+        addFriend: { min: 0, max: 0 },
+        joinGroup: { min: 0, max: 0 }
+      }
+    },
+    {
+      name: 'Phase 2 - Tương tác nhẹ',
+      days: [8, 14],              // Ngày 8-14
+      dailyActions: {
+        login: true,
+        scrollFeed: { min: 10, max: 15 },
+        like: { min: 5, max: 10 },
+        comment: { min: 1, max: 3 },
+        post: { min: 0, max: 1 },
+        addFriend: { min: 2, max: 5 },
+        joinGroup: { min: 0, max: 1 }
+      }
+    },
+    {
+      name: 'Phase 3 - Hoạt động bình thường',
+      days: [15, 21],             // Ngày 15-21
+      dailyActions: {
+        login: true,
+        scrollFeed: { min: 15, max: 20 },
+        like: { min: 10, max: 20 },
+        comment: { min: 3, max: 5 },
+        post: { min: 1, max: 2 },
+        addFriend: { min: 3, max: 5 },
+        joinGroup: { min: 1, max: 2 }
+      }
+    }
+  ],
+  // Thời gian chạy hàng ngày
+  schedule: {
+    timezone: 'Asia/Ho_Chi_Minh',
+    runAt: ['09:00', '14:00', '20:00'],   // Chạy 3 lần/ngày
+    randomDelay: 30                        // ±30 phút random
+  },
+  createdAt: '...',
+  updatedAt: '...'
+}
+```
+
+#### 15.2 Warm-up Progress Tracking
+```javascript
+{
+  id: 'progress-xxx',
+  warmupId: 'warmup-xxx',
+  profileId: 'profile-xxx',
+  profileName: 'Account FB 001',
+  startDate: '2024-01-01',
+  currentDay: 5,                  // Đang ở ngày thứ 5
+  currentPhase: 1,                // Phase 1
+  status: 'running',              // pending, running, paused, completed, failed
+  dailyLogs: [
+    {
+      day: 1,
+      date: '2024-01-01',
+      actions: { login: 1, scrollFeed: 7, like: 3, comment: 0 },
+      status: 'completed'
+    },
+    // ...
+  ],
+  nextRunAt: '2024-01-06T09:00:00',
+  completedAt: null
+}
+```
+
+#### 15.3 Database Tables
+```sql
+-- Warm-up templates
+CREATE TABLE warmup_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  total_days INTEGER DEFAULT 21,
+  phases TEXT NOT NULL,           -- JSON array of phases
+  schedule TEXT,                  -- JSON schedule config
+  is_default INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Warm-up progress per profile
+CREATE TABLE warmup_progress (
+  id TEXT PRIMARY KEY,
+  warmup_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  profile_name TEXT,
+  start_date TEXT NOT NULL,
+  current_day INTEGER DEFAULT 1,
+  current_phase INTEGER DEFAULT 1,
+  status TEXT DEFAULT 'pending',
+  daily_logs TEXT,                -- JSON array of daily logs
+  next_run_at TEXT,
+  completed_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (warmup_id) REFERENCES warmup_templates(id),
+  FOREIGN KEY (profile_id) REFERENCES profiles(id)
+);
+```
+
+#### 15.4 API Endpoints
+```javascript
+// Warm-up Templates
+createWarmupTemplate(template)    // Tạo template mới
+getWarmupTemplates()              // Lấy danh sách templates
+getWarmupTemplate(id)             // Lấy chi tiết template
+updateWarmupTemplate(id, data)    // Cập nhật template
+deleteWarmupTemplate(id)          // Xóa template
+duplicateWarmupTemplate(id)       // Nhân bản template
+
+// Warm-up Progress
+startWarmup(templateId, profileIds)   // Bắt đầu warm-up cho profiles
+pauseWarmup(progressId)               // Tạm dừng
+resumeWarmup(progressId)              // Tiếp tục
+stopWarmup(progressId)                // Dừng hẳn
+getWarmupProgress(progressId)         // Lấy tiến độ
+getActiveWarmups()                    // Lấy các warm-up đang chạy
+getWarmupsByProfile(profileId)        // Warm-up của 1 profile
+
+// Warm-up Execution
+executeWarmupDay(progressId)          // Chạy actions cho ngày hiện tại
+getWarmupStats()                      // Thống kê tổng quan
+```
+
+#### 15.5 Pre-built Templates
+| Platform | Days | Phases | Description |
+|----------|------|--------|-------------|
+| Facebook | 21 | 3 | Login → Like → Comment → Post → Add friends |
+| TikTok | 14 | 2 | Watch → Like → Comment → Follow → Post |
+| Instagram | 21 | 3 | Browse → Like → Comment → Follow → Post |
+| Google | 7 | 2 | Search → Browse → Watch YouTube |
+| Twitter/X | 14 | 2 | Browse → Like → Retweet → Tweet |
+
+#### 15.6 UI Components
+```
+┌─────────────────────────────────────────────────────────┐
+│ 🔥 Account Warm-up                                      │
+├─────────────────────────────────────────────────────────┤
+│ Templates:                                              │
+│ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐        │
+│ │ 📘 Facebook │ │ 🎵 TikTok  │ │ 📷 Instagram │        │
+│ │ 21 days     │ │ 14 days    │ │ 21 days      │        │
+│ │ 3 phases    │ │ 2 phases   │ │ 3 phases     │        │
+│ │ [Select]    │ │ [Select]   │ │ [Select]     │        │
+│ └─────────────┘ └─────────────┘ └─────────────┘        │
+│                                                         │
+│ Active Warm-ups:                                        │
+│ ┌───────────────────────────────────────────────────┐  │
+│ │ Profile: Account FB 001                           │  │
+│ │ Template: Facebook 21 days                        │  │
+│ │ Progress: Day 5/21 (Phase 1)   ████░░░░░░ 24%    │  │
+│ │ Next run: Today 14:00          [Pause] [Stop]    │  │
+│ ├───────────────────────────────────────────────────┤  │
+│ │ Profile: Account FB 002                           │  │
+│ │ Template: Facebook 21 days                        │  │
+│ │ Progress: Day 12/21 (Phase 2)  ██████░░░░ 57%    │  │
+│ │ Next run: Today 09:30          [Pause] [Stop]    │  │
+│ └───────────────────────────────────────────────────┘  │
+│                                                         │
+│ [+ Start New Warm-up]                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 15.7 Files
+- [x] `sidecar/warmup/schema.js` - Warm-up schema & validation
+- [x] `sidecar/warmup/templates.js` - Pre-built templates
+- [x] `sidecar/warmup/executor.js` - Execute daily actions
+- [x] `sidecar/warmup/scheduler.js` - Schedule warm-up runs
+- [x] `sidecar/warmup/login.js` - Hybrid login handler (cookies + credentials)
+- [x] `sidecar/warmup/index.js` - Module exports
+- [x] `sidecar/database/index.js` - Database operations (updated)
+- [x] `sidecar/database/migrate.js` - DB tables (updated)
+- [x] `sidecar/index.js` - API endpoints (updated)
+- [x] `frontend/src/lib/warmup/WarmupDashboard.svelte`
+- [x] `frontend/src/lib/warmup/WarmupProgress.svelte`
+- [x] `frontend/src/lib/api.js` - API functions (updated)
+- [x] `frontend/src/App.svelte` - Warmup tab (updated)
+- [ ] `frontend/src/lib/warmup/WarmupTemplateEditor.svelte` (optional)
+
+### Phase 16: Enterprise Features
 - [ ] License System (Hardware ID, online validation)
 - [ ] Security (Encrypted database, password protection)
 - [ ] Multi-language UI (Vietnamese, English, Chinese)

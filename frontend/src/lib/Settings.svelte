@@ -12,7 +12,6 @@
     { id: 'general', label: 'General', icon: '⚙️' },
     { id: 'proxies', label: 'Proxies', icon: '🌐' },
     { id: 'extensions', label: 'Extensions', icon: '🧩' },
-    { id: 'groups', label: 'Groups', icon: '📁' },
     { id: 'paths', label: 'Storage', icon: '💾' },
     { id: 'about', label: 'About', icon: 'ℹ️' },
   ];
@@ -58,25 +57,14 @@
     { value: 'workflows', label: 'Workflows' },
   ];
 
-  // Groups
-  let groups = [];
-
   onMount(() => {
     loadSettings();
-    loadGroups();
   });
 
   function loadSettings() {
     const savedSettings = localStorage.getItem('mmo-express-settings');
     if (savedSettings) {
       settings = { ...settings, ...JSON.parse(savedSettings) };
-    }
-  }
-
-  function loadGroups() {
-    const savedGroups = localStorage.getItem('mmo_groups');
-    if (savedGroups) {
-      groups = JSON.parse(savedGroups);
     }
   }
 
@@ -95,36 +83,6 @@
     if (!confirmed) return;
     localStorage.removeItem('mmo-express-settings');
     location.reload();
-  }
-
-  // Group management
-  let newGroupName = '';
-
-  function addGroup() {
-    if (!newGroupName.trim()) return;
-    const newGroup = {
-      id: 'group-' + Date.now(),
-      name: newGroupName.trim(),
-      color: getRandomColor(),
-      createdAt: new Date().toISOString()
-    };
-    groups = [...groups, newGroup];
-    saveGroups();
-    newGroupName = '';
-  }
-
-  function deleteGroup(id) {
-    groups = groups.filter(g => g.id !== id);
-    saveGroups();
-  }
-
-  function saveGroups() {
-    localStorage.setItem('mmo_groups', JSON.stringify(groups));
-  }
-
-  function getRandomColor() {
-    const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
-    return colors[Math.floor(Math.random() * colors.length)];
   }
 </script>
 
@@ -281,47 +239,6 @@
     {:else if activeMenu === 'extensions'}
       <div class="content-section full-height">
         <ExtensionList />
-      </div>
-
-    {:else if activeMenu === 'groups'}
-      <div class="content-section">
-        <div class="section-header">
-          <h1>Profile Groups</h1>
-        </div>
-
-        <div class="settings-group">
-          <h3>Add New Group</h3>
-          <div class="add-group-form">
-            <input
-              type="text"
-              bind:value={newGroupName}
-              placeholder="Group name..."
-              on:keydown={(e) => e.key === 'Enter' && addGroup()}
-            />
-            <button class="btn btn-primary" on:click={addGroup}>Add Group</button>
-          </div>
-        </div>
-
-        <div class="settings-group">
-          <h3>Existing Groups ({groups.length})</h3>
-
-          {#if groups.length === 0}
-            <div class="empty-state">
-              <p>No groups created yet</p>
-              <p class="hint">Groups help organize your profiles</p>
-            </div>
-          {:else}
-            <div class="groups-list">
-              {#each groups as group}
-                <div class="group-item">
-                  <div class="group-color" style="background: {group.color}"></div>
-                  <span class="group-name">{group.name}</span>
-                  <button class="btn-icon danger" on:click={() => deleteGroup(group.id)}>✕</button>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
       </div>
 
     {:else if activeMenu === 'paths'}
@@ -620,65 +537,6 @@
 
   input:checked + .slider:before {
     transform: translateX(20px);
-  }
-
-  /* Groups */
-  .add-group-form {
-    display: flex;
-    gap: 12px;
-  }
-
-  .add-group-form input {
-    flex: 1;
-    padding: 10px 14px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    color: var(--text-primary);
-    font-size: 14px;
-  }
-
-  .add-group-form input:focus {
-    outline: none;
-    border-color: var(--accent-color);
-  }
-
-  .groups-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .group-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-  }
-
-  .group-color {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-  }
-
-  .group-name {
-    flex: 1;
-    font-size: 14px;
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 32px;
-    color: var(--text-secondary);
-  }
-
-  .empty-state .hint {
-    font-size: 13px;
-    opacity: 0.7;
   }
 
   /* About */

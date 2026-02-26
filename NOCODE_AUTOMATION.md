@@ -1044,3 +1044,183 @@ frontend/src/lib/
 | 8.8 | Scheduling system | P2 |
 | 8.9 | Advanced actions (captcha, HTTP) | P2 |
 | 8.10 | Workflow templates | P2 |
+| 8.11 | Account Warm-up System | P1 |
+
+---
+
+## 9. Account Warm-up System 🆕
+
+Hệ thống tự động "làm nóng" tài khoản mới để tránh bị ban.
+
+### 9.1 Vấn đề
+
+Khi tạo account mới trên các nền tảng (Facebook, TikTok, Instagram...), nếu ngay lập tức:
+- Đăng nhiều bài
+- Like/comment spam
+- Add nhiều bạn bè
+- Chạy automation
+
+→ **Account bị flag là bot → BAN**
+
+### 9.2 Giải pháp
+
+**Warm-up Schedule** - Tăng dần hoạt động theo thời gian:
+
+```
+Tuần 1 (Ngày 1-7):   Login + Scroll feed 5-10 phút + Like 2-5 bài
+Tuần 2 (Ngày 8-14):  + Comment 1-3 + Add friends 2-5 + Post 1 bài
+Tuần 3 (Ngày 15-21): + Hoạt động bình thường + Join groups
+Sau 21 ngày:         Account đã "nóng" → có thể automation
+```
+
+### 9.3 Kiến trúc
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 ACCOUNT WARM-UP SYSTEM                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              WARM-UP TEMPLATES                       │    │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │    │
+│  │  │ Facebook │ │  TikTok  │ │Instagram │            │    │
+│  │  │ 21 days  │ │ 14 days  │ │ 21 days  │            │    │
+│  │  └──────────┘ └──────────┘ └──────────┘            │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          │                                   │
+│                          ▼                                   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              WARM-UP SCHEDULER                       │    │
+│  │  • Chạy theo lịch hàng ngày (09:00, 14:00, 20:00)   │    │
+│  │  • Random delay ±30 phút                            │    │
+│  │  • Track progress từng profile                      │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          │                                   │
+│                          ▼                                   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              WARM-UP EXECUTOR                        │    │
+│  │  • Generate actions theo phase/day                   │    │
+│  │  • Execute via Workflow Engine                       │    │
+│  │  • Log daily activities                             │    │
+│  │  • Update progress                                  │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          │                                   │
+│                          ▼                                   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              PROGRESS TRACKING                       │    │
+│  │  Profile A: Day 5/21  ████░░░░░░ 24% (Phase 1)      │    │
+│  │  Profile B: Day 12/21 ██████░░░░ 57% (Phase 2)      │    │
+│  │  Profile C: Day 21/21 ██████████ ✓  (Completed)     │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 9.4 Warm-up Template Schema
+
+```javascript
+{
+  id: 'warmup-facebook-21',
+  name: 'Facebook Warm-up 21 ngày',
+  platform: 'facebook',
+  totalDays: 21,
+  phases: [
+    {
+      name: 'Phase 1 - Làm quen',
+      days: [1, 7],
+      dailyActions: {
+        login: true,
+        scrollFeed: { min: 5, max: 10 },    // phút
+        like: { min: 2, max: 5 },
+        comment: { min: 0, max: 1 },
+        post: { min: 0, max: 0 },
+        addFriend: { min: 0, max: 0 }
+      }
+    },
+    {
+      name: 'Phase 2 - Tương tác nhẹ',
+      days: [8, 14],
+      dailyActions: {
+        login: true,
+        scrollFeed: { min: 10, max: 15 },
+        like: { min: 5, max: 10 },
+        comment: { min: 1, max: 3 },
+        post: { min: 0, max: 1 },
+        addFriend: { min: 2, max: 5 }
+      }
+    },
+    {
+      name: 'Phase 3 - Hoạt động bình thường',
+      days: [15, 21],
+      dailyActions: {
+        login: true,
+        scrollFeed: { min: 15, max: 20 },
+        like: { min: 10, max: 20 },
+        comment: { min: 3, max: 5 },
+        post: { min: 1, max: 2 },
+        addFriend: { min: 3, max: 5 }
+      }
+    }
+  ],
+  schedule: {
+    timezone: 'Asia/Ho_Chi_Minh',
+    runAt: ['09:00', '14:00', '20:00'],
+    randomDelay: 30  // ±30 phút
+  }
+}
+```
+
+### 9.5 Progress Schema
+
+```javascript
+{
+  id: 'progress-xxx',
+  warmupId: 'warmup-facebook-21',
+  profileId: 'profile-001',
+  profileName: 'Account FB 001',
+  startDate: '2024-01-01',
+  currentDay: 5,
+  currentPhase: 1,
+  status: 'running',  // pending, running, paused, completed, failed
+  dailyLogs: [
+    {
+      day: 1,
+      date: '2024-01-01',
+      actions: { login: 1, scrollFeed: 7, like: 3, comment: 0 },
+      status: 'completed'
+    }
+  ],
+  nextRunAt: '2024-01-06T09:00:00',
+  completedAt: null
+}
+```
+
+### 9.6 Pre-built Templates
+
+| Platform | Days | Phases | Actions |
+|----------|------|--------|---------|
+| Facebook | 21 | 3 | Login, Scroll, Like, Comment, Post, Add Friends |
+| TikTok | 14 | 2 | Watch, Like, Comment, Follow, Post |
+| Instagram | 21 | 3 | Browse, Like, Comment, Follow, Post, Story |
+| Google | 7 | 2 | Search, Browse, Watch YouTube |
+| Twitter/X | 14 | 2 | Browse, Like, Retweet, Tweet |
+
+### 9.7 Files Structure
+
+```
+sidecar/
+├── warmup/
+│   ├── schema.js        # Warm-up schema & validation
+│   ├── templates.js     # Pre-built templates
+│   ├── executor.js      # Execute daily actions
+│   └── scheduler.js     # Schedule warm-up runs
+├── database/
+│   └── warmup.js        # Database operations
+
+frontend/src/lib/
+├── warmup/
+│   ├── WarmupDashboard.svelte       # Main dashboard
+│   ├── WarmupTemplateEditor.svelte  # Edit templates
+│   ├── WarmupProgress.svelte        # Progress cards
+│   └── WarmupStartModal.svelte      # Start warm-up modal
+```

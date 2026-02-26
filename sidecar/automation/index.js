@@ -6,6 +6,7 @@
 const { WorkflowExecutor, BatchExecutor, ExecutionStatus } = require('./executor');
 const { VariableStore, interpolate, evaluateExpression } = require('./variables');
 const { getAction, hasAction, getActionTypes, getAllActionSchemas } = require('./actions');
+const { getDB } = require('../database');
 
 /**
  * Workflow Manager
@@ -14,14 +15,13 @@ const { getAction, hasAction, getActionTypes, getAllActionSchemas } = require('.
 class WorkflowManager {
   constructor(options = {}) {
     this.options = options;
-    this.workflows = new Map(); // In-memory storage (would be replaced with DB)
     this.executor = new WorkflowExecutor(options);
     this.batchExecutor = new BatchExecutor(options);
     this.runningExecutions = new Map();
   }
 
   /**
-   * Register a workflow
+   * Register a workflow (save to database)
    */
   registerWorkflow(workflow) {
     // Validate workflow
@@ -30,10 +30,23 @@ class WorkflowManager {
       throw new Error(`Invalid workflow: ${validation.errors.join(', ')}`);
     }
 
-    this.workflows.set(workflow.id, {
-      ...workflow,
-      registeredAt: Date.now(),
-    });
+    const db = getDB();
+    const existing = db.getWorkflow(workflow.id);
+
+    if (existing) {
+      // Update existing workflow
+      db.updateWorkflow({
+        ...workflow,
+        updatedAt: new Date().toISOString(),
+      });
+    } else {
+      // Create new workflow
+      db.createWorkflow({
+        ...workflow,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
 
     return { success: true, workflowId: workflow.id };
   }
@@ -42,33 +55,34 @@ class WorkflowManager {
    * Get a workflow by ID
    */
   getWorkflow(workflowId) {
-    return this.workflows.get(workflowId);
+    const db = getDB();
+    return db.getWorkflow(workflowId);
   }
 
   /**
    * List all workflows
    */
   listWorkflows() {
-    const result = [];
-    for (const [id, workflow] of this.workflows) {
-      result.push({
-        id,
-        name: workflow.name,
-        description: workflow.description,
-        tags: workflow.tags || [],
-        steps: workflow.steps || [],
-        stepsCount: workflow.steps?.length || 0,
-        registeredAt: workflow.registeredAt,
-      });
-    }
-    return result;
+    const db = getDB();
+    const workflows = db.getWorkflows();
+    return workflows.map(workflow => ({
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      tags: workflow.tags || [],
+      steps: workflow.steps || [],
+      stepsCount: workflow.steps?.length || 0,
+      createdAt: workflow.createdAt,
+      updatedAt: workflow.updatedAt,
+    }));
   }
 
   /**
    * Delete a workflow
    */
   deleteWorkflow(workflowId) {
-    return this.workflows.delete(workflowId);
+    const db = getDB();
+    return db.deleteWorkflow(workflowId);
   }
 
   /**

@@ -12,6 +12,11 @@ const { buildTimezoneScript } = require('./timezone');
 const { buildScreenScript } = require('./screen');
 const { buildClientRectsScript } = require('./clientRects');
 const { buildMediaDevicesScript } = require('./mediaDevices');
+const { buildFontsScript } = require('./fonts');
+const { buildSpeechScript } = require('./speech');
+const { buildWorkerScript } = require('./worker');
+const { buildHeadlessScript } = require('./headless');
+const { buildWorkerInjectScript } = require('./workerInject');
 
 /**
  * Build complete stealth script for a profile
@@ -19,21 +24,20 @@ const { buildMediaDevicesScript } = require('./mediaDevices');
  * @returns {string} Combined JavaScript to inject
  */
 function buildStealthScript(profile) {
+  // DEBUG: Comment từng cái để test
   const scripts = [
-    // P0 - Critical anti-detection
-    buildNavigatorScript(profile),
-    buildWebGLScript(profile),
-    buildCanvasScript(profile),
-    buildScreenScript(profile),
-    buildWebRTCScript(profile),
-
-    // P1 - Important fingerprint randomization
-    buildAudioScript(profile),
-    buildTimezoneScript(profile),
-
-    // P2 - Additional protection
-    buildClientRectsScript(profile),
-    buildMediaDevicesScript(profile),
+    buildNavigatorScript(profile),       // 1. Navigator (empty - webdriver from flag)
+    buildTimezoneScript(profile),        // 2. Timezone ✓
+    buildCanvasScript(profile),          // 3. Canvas (empty - avoid detection)
+    buildWebGLScript(profile),           // 4. WebGL (empty - avoid detection)
+    // buildScreenScript(profile),       // 5. Screen - DISABLED
+    buildWebRTCScript(profile),       // 6. WebRTC ✓
+    buildAudioScript(profile),        // 7. Audio ✓
+    buildClientRectsScript(profile),  // 8. ClientRects ✓
+    buildMediaDevicesScript(profile), // 9. MediaDevices ✓
+    buildFontsScript(profile),        // 10. Fonts ✓
+    buildSpeechScript(profile),       // 11. Speech ✓
+    buildHeadlessScript(profile),     // 12. Headless ← TESTING
   ];
 
   return `
@@ -42,10 +46,9 @@ function buildStealthScript(profile) {
 
   try {
     ${scripts.join('\n\n')}
-
-    console.debug('[Stealth] All protections applied for profile');
+    console.debug('[Stealth] All protections applied');
   } catch (e) {
-    console.error('[Stealth] Error applying protections:', e);
+    console.error('[Stealth] Error:', e.message);
   }
 })();
 `;
@@ -120,4 +123,9 @@ module.exports = {
   buildScreenScript,
   buildClientRectsScript,
   buildMediaDevicesScript,
+  buildFontsScript,
+  buildSpeechScript,
+  buildWorkerScript,
+  buildHeadlessScript,
+  buildWorkerInjectScript,
 };

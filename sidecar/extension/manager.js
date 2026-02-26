@@ -379,20 +379,193 @@ function getExtensionPaths(extensionIds, includeDisabled = false) {
 }
 
 /**
- * Build Chromium args for extensions
+ * Build Chromium args for extensions (only works with Chromium, not Google Chrome)
  * @param {Array} extensionIds - List of extension IDs
  * @returns {Array} Chromium launch args
  */
 function buildExtensionArgs(extensionIds) {
+  // Note: --load-extension is disabled in Google Chrome, only works in Chromium
+  // Use installExtensionsToProfile() instead for Google Chrome
   const paths = getExtensionPaths(extensionIds);
   if (paths.length === 0) {
     return [];
   }
 
+  console.error(`[EXTENSION] Building args for ${paths.length} extensions (Chromium only)`);
+
+  // Create symlinks in /tmp to avoid paths with spaces
+  const symlinkDir = '/tmp/mmo-extensions';
+  if (!fs.existsSync(symlinkDir)) {
+    fs.mkdirSync(symlinkDir, { recursive: true });
+  }
+
+  const cleanPaths = paths.map(extPath => {
+    // If path has spaces, create symlink
+    if (extPath.includes(' ')) {
+      const extId = path.basename(extPath);
+      const symlinkPath = path.join(symlinkDir, extId);
+      try {
+        if (fs.existsSync(symlinkPath)) {
+          fs.unlinkSync(symlinkPath);
+        }
+        fs.symlinkSync(extPath, symlinkPath);
+        console.error(`[EXTENSION]   - ${extId} (symlink)`);
+        return symlinkPath;
+      } catch (e) {
+        console.error(`[EXTENSION] Symlink failed: ${e.message}`);
+        return extPath;
+      }
+    }
+    console.error(`[EXTENSION]   - ${path.basename(extPath)}`);
+    return extPath;
+  });
+
   return [
-    `--disable-extensions-except=${paths.join(',')}`,
-    `--load-extension=${paths.join(',')}`,
+    `--load-extension=${cleanPaths.join(',')}`,
   ];
+}
+
+/**
+ * Install extensions to a Chrome profile directory
+ * This works with Google Chrome (unlike --load-extension which is disabled)
+ * @param {string} profileDir - Profile user data directory
+ * @param {Array} extensionIds - List of extension IDs to install
+ */
+function installExtensionsToProfile(profileDir, extensionIds) {
+  const paths = getExtensionPaths(extensionIds);
+  if (paths.length === 0) {
+    return;
+  }
+
+  // Chrome stores extensions in Default/Extensions/<ext-id>/<version>/
+  const extensionsDir = path.join(profileDir, 'Default', 'Extensions');
+  if (!fs.existsSync(extensionsDir)) {
+    fs.mkdirSync(extensionsDir, { recursive: true });
+  }
+
+  console.error(`[EXTENSION] Installing ${paths.length} extensions to profile`);
+
+  for (const extPath of paths) {
+    try {
+      const manifestPath = path.join(extPath, 'manifest.json');
+      if (!fs.existsSync(manifestPath)) {
+        console.error(`[EXTENSION] Skipping invalid extension (no manifest): ${extPath}`);
+        continue;
+      }
+
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const extId = path.basename(extPath);
+      const version = manifest.version || '1.0.0';
+      // Chrome uses version format like "1.0.0_0"
+      const versionDir = version.replace(/\./g, '_') + '_0';
+
+      const targetDir = path.join(extensionsDir, extId, versionDir);
+
+      // Skip if already installed
+      if (fs.existsSync(targetDir)) {
+        console.error(`[EXTENSION]   - ${manifest.name || extId} (already installed)`);
+        continue;
+      }
+
+      // Create target directory
+      fs.mkdirSync(targetDir, { recursive: true });
+
+      // Copy extension files
+      copyFolderSync(extPath, targetDir);
+
+      console.error(`[EXTENSION]   - ${manifest.name || extId} v${version} -> ${extId}`);
+    } catch (e) {
+      console.error(`[EXTENSION] Failed to install extension: ${e.message}`);
+    }
+  }
+
+  // Update Preferences file to enable the extensions
+  updatePreferencesForExtensions(profileDir, extensionIds);
+}
+
+/**
+ * Update Chrome Preferences file to register extensions
+ */
+function updatePreferencesForExtensions(profileDir, extensionIds) {
+  const prefsPath = path.join(profileDir, 'Default', 'Preferences');
+  let prefs = {};
+
+  // Load existing preferences
+  if (fs.existsSync(prefsPath)) {
+    try {
+      prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    } catch (e) {
+      console.error(`[EXTENSION] Failed to read Preferences: ${e.message}`);
+    }
+  }
+
+  // Ensure extensions settings exist
+  if (!prefs.extensions) prefs.extensions = {};
+  if (!prefs.extensions.settings) prefs.extensions.settings = {};
+
+  const paths = getExtensionPaths(extensionIds);
+  for (const extPath of paths) {
+    try {
+      const manifestPath = path.join(extPath, 'manifest.json');
+      if (!fs.existsSync(manifestPath)) continue;
+
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const extId = path.basename(extPath);
+      const version = manifest.version || '1.0.0';
+
+      // Skip if already in settings
+      if (prefs.extensions.settings[extId]) continue;
+
+      // Add extension to settings
+      prefs.extensions.settings[extId] = {
+        active_permissions: {
+          api: manifest.permissions || [],
+          explicit_host: manifest.host_permissions || [],
+          manifest_permissions: [],
+          scriptable_host: []
+        },
+        commands: {},
+        content_settings: [],
+        creation_flags: 1,
+        first_install_time: Date.now().toString(),
+        from_webstore: false,
+        granted_permissions: {
+          api: manifest.permissions || [],
+          explicit_host: manifest.host_permissions || [],
+          manifest_permissions: [],
+          scriptable_host: []
+        },
+        incognito_content_settings: [],
+        incognito_preferences: {},
+        install_time: Date.now().toString(),
+        location: 4, // LOAD_COMMAND_LINE
+        manifest: manifest,
+        path: extId,
+        preferences: {},
+        regular_only_preferences: {},
+        state: 1, // ENABLED
+        was_installed_by_default: false,
+        was_installed_by_oem: false,
+        withholding_permissions: false
+      };
+    } catch (e) {
+      console.error(`[EXTENSION] Failed to add extension to prefs: ${e.message}`);
+    }
+  }
+
+  // Ensure directory exists
+  const prefsDir = path.dirname(prefsPath);
+  if (!fs.existsSync(prefsDir)) {
+    fs.mkdirSync(prefsDir, { recursive: true });
+  }
+
+  // Write updated preferences
+  try {
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2));
+    console.error(`[EXTENSION] Updated Preferences file`);
+  } catch (e) {
+    console.error(`[EXTENSION] Failed to write Preferences: ${e.message}`);
+  }
 }
 
 /**
@@ -717,6 +890,7 @@ module.exports = {
   removeExtension,
   getExtensionPaths,
   buildExtensionArgs,
+  installExtensionsToProfile,
   generateExtensionId,
   enableExtension,
   disableExtension,

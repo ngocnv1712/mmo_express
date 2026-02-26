@@ -99,6 +99,50 @@ function initDatabase(db) {
     CREATE INDEX IF NOT EXISTS idx_history_started ON execution_history(started_at);
   `);
 
+  // Warm-up templates table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS warmup_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      platform TEXT NOT NULL,
+      total_days INTEGER DEFAULT 21,
+      phases TEXT NOT NULL,
+      schedule TEXT DEFAULT '{}',
+      is_default INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Warm-up progress table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS warmup_progress (
+      id TEXT PRIMARY KEY,
+      warmup_id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      profile_name TEXT DEFAULT '',
+      start_date TEXT NOT NULL,
+      current_day INTEGER DEFAULT 1,
+      current_phase INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'pending',
+      daily_logs TEXT DEFAULT '[]',
+      next_run_at TEXT,
+      completed_at TEXT,
+      error TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (warmup_id) REFERENCES warmup_templates(id)
+    )
+  `);
+
+  // Warm-up indexes
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_warmup_progress_status ON warmup_progress(status);
+    CREATE INDEX IF NOT EXISTS idx_warmup_progress_profile ON warmup_progress(profile_id);
+    CREATE INDEX IF NOT EXISTS idx_warmup_progress_next_run ON warmup_progress(next_run_at);
+  `);
+
   console.log('[MIGRATE] Database schema initialized');
 }
 

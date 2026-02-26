@@ -17,7 +17,6 @@ const mockDb = {
   profiles: JSON.parse(localStorage.getItem('mmo_profiles') || '[]'),
   proxies: JSON.parse(localStorage.getItem('mmo_proxies') || '[]'),
   workflows: JSON.parse(localStorage.getItem('mmo_workflows') || '[]'),
-  groups: JSON.parse(localStorage.getItem('mmo_groups') || '[]'),
 };
 
 function saveMock(key) {
@@ -94,8 +93,6 @@ async function invoke(cmd, args = {}) {
       return;
     case 'db_get_workflows':
       return mockDb.workflows;
-    case 'db_get_groups':
-      return mockDb.groups;
 
     // Extension commands - call sidecar HTTP API
     case 'list_extensions':
@@ -114,6 +111,16 @@ async function invoke(cmd, args = {}) {
       return await callSidecar('disableExtension', { extensionId: args.extensionId });
     case 'toggle_extension':
       return await callSidecar('toggleExtension', { extensionId: args.extensionId });
+
+    // System info
+    case 'get_system_info':
+      return await callSidecar('getSystemInfo');
+
+    // Devices and engines
+    case 'get_devices':
+      return await callSidecar('getDevices');
+    case 'get_engines':
+      return await callSidecar('getEngines');
 
     default:
       console.warn(`[Browser] Command not available: ${cmd}`);
@@ -338,6 +345,14 @@ export async function getDevices() {
  */
 export async function getEngines() {
   return await invoke('get_engines');
+}
+
+/**
+ * Get system info including actual OS for profile consistency
+ * @returns {Object} System info with actualOS, cpuCores, totalMemory, etc.
+ */
+export async function getSystemInfo() {
+  return await invoke('get_system_info');
 }
 
 /**
@@ -596,39 +611,6 @@ export async function deleteWorkflow(id) {
   return await invoke('db_delete_workflow', { id });
 }
 
-// ============ Database - Groups API ============
-
-/**
- * Create a new group in database
- * @param {Object} group - Group object
- */
-export async function createGroup(group) {
-  return await invoke('db_create_group', { group });
-}
-
-/**
- * Get all groups from database
- */
-export async function getGroups() {
-  return await invoke('db_get_groups');
-}
-
-/**
- * Update group in database
- * @param {Object} group - Group object with ID
- */
-export async function updateGroup(group) {
-  return await invoke('db_update_group', { group });
-}
-
-/**
- * Delete group from database
- * @param {string} id - Group ID
- */
-export async function deleteGroup(id) {
-  return await invoke('db_delete_group', { id });
-}
-
 // ============ Helper - Profile Generation ============
 
 /**
@@ -698,8 +680,7 @@ export async function createNewProfile(overrides = {}) {
     plugins: '["Chrome PDF Viewer", "Chromium PDF Viewer"]',
     speechVoices: '[]',
     proxyId: '',
-    groupId: '',
-    platformTags: '[]',
+    tags: '[]',
     notes: '',
     bookmarks: '',
     status: 'active',
@@ -762,25 +743,6 @@ export async function createNewWorkflow(overrides = {}) {
   };
 
   return await createWorkflow(workflow);
-}
-
-/**
- * Create a new group with defaults and save to database
- * @param {Object} overrides - Values to override defaults
- */
-export async function createNewGroup(overrides = {}) {
-  const now = new Date().toISOString();
-  const group = {
-    id: generateUUID(),
-    name: overrides.name || 'New Group',
-    color: '#3b82f6',
-    description: '',
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  };
-
-  return await createGroup(group);
 }
 
 // ============ Profile Presets ============
@@ -1069,14 +1031,15 @@ if (!mockDb.resources) {
 }
 
 if (!mockDb.platforms) {
+  // Note: Cookies are managed at Profile level (Storage tab), not here
   mockDb.platforms = [
-    { id: 'facebook', name: 'Facebook', fields: ['email', 'phone', 'password', 'twofa', 'cookies'] },
+    { id: 'facebook', name: 'Facebook', fields: ['email', 'phone', 'password', 'twofa'] },
     { id: 'zalo', name: 'Zalo', fields: ['phone', 'password', 'twofa'] },
-    { id: 'tiktok', name: 'TikTok', fields: ['email', 'phone', 'username', 'password', 'cookies'] },
+    { id: 'tiktok', name: 'TikTok', fields: ['email', 'phone', 'username', 'password'] },
     { id: 'gmail', name: 'Gmail', fields: ['email', 'password', 'twofa', 'recoveryEmail'] },
     { id: 'shopee', name: 'Shopee', fields: ['email', 'phone', 'password'] },
     { id: 'telegram', name: 'Telegram', fields: ['phone', 'session'] },
-    { id: 'instagram', name: 'Instagram', fields: ['username', 'email', 'password', 'cookies'] },
+    { id: 'instagram', name: 'Instagram', fields: ['username', 'email', 'password'] },
     { id: 'twitter', name: 'Twitter/X', fields: ['username', 'email', 'password', 'twofa'] },
     { id: 'youtube', name: 'YouTube', fields: ['email', 'password', 'token'] },
     { id: 'linkedin', name: 'LinkedIn', fields: ['email', 'password'] },
@@ -1197,4 +1160,125 @@ export async function testProfileFingerprint(profileId) {
       failed: tests.filter(t => t.status === 'fail').length,
     }
   };
+}
+
+// ============ Warmup API ============
+
+/**
+ * Get all warmup templates
+ */
+export async function getWarmupTemplates() {
+  return await callSidecar('getWarmupTemplates');
+}
+
+/**
+ * Get default (pre-built) warmup templates
+ */
+export async function getDefaultWarmupTemplates() {
+  return await callSidecar('getDefaultWarmupTemplates');
+}
+
+/**
+ * Get warmup template by ID
+ */
+export async function getWarmupTemplate(id) {
+  return await callSidecar('getWarmupTemplate', { id });
+}
+
+/**
+ * Create warmup template
+ */
+export async function createWarmupTemplate(template) {
+  return await callSidecar('createWarmupTemplate', { templateData: template });
+}
+
+/**
+ * Update warmup template
+ */
+export async function updateWarmupTemplate(id, template) {
+  return await callSidecar('updateWarmupTemplate', { id, templateData: template });
+}
+
+/**
+ * Delete warmup template
+ */
+export async function deleteWarmupTemplate(id) {
+  return await callSidecar('deleteWarmupTemplate', { id });
+}
+
+/**
+ * Get warmup progress list
+ */
+export async function getWarmupProgress(options = {}) {
+  return await callSidecar('getWarmupProgress', { options });
+}
+
+/**
+ * Get active warmups
+ */
+export async function getActiveWarmups() {
+  return await callSidecar('getActiveWarmups');
+}
+
+/**
+ * Get warmups by profile
+ */
+export async function getWarmupsByProfile(profileId) {
+  return await callSidecar('getWarmupsByProfile', { profileId });
+}
+
+/**
+ * Start warmup for profiles
+ */
+export async function startWarmup(templateId, profileIds, options = {}) {
+  return await callSidecar('startWarmup', { templateId, profileIds, options });
+}
+
+/**
+ * Pause warmup
+ */
+export async function pauseWarmup(progressId) {
+  return await callSidecar('pauseWarmup', { progressId });
+}
+
+/**
+ * Resume warmup
+ */
+export async function resumeWarmup(progressId) {
+  return await callSidecar('resumeWarmup', { progressId });
+}
+
+/**
+ * Stop warmup
+ */
+export async function stopWarmup(progressId) {
+  return await callSidecar('stopWarmup', { progressId });
+}
+
+/**
+ * Run warmup now (manual trigger)
+ */
+export async function runWarmupNow(progressId) {
+  return await callSidecar('runWarmupNow', { progressId });
+}
+
+/**
+ * Delete warmup progress
+ */
+export async function deleteWarmupProgress(progressId) {
+  return await callSidecar('deleteWarmupProgress', { progressId });
+}
+
+/**
+ * Get warmup stats
+ */
+export async function getWarmupStats() {
+  return await callSidecar('getWarmupStats');
+}
+
+/**
+ * Get supported platforms
+ */
+export async function getWarmupPlatforms() {
+  return await callSidecar('getWarmupPlatforms');
 }

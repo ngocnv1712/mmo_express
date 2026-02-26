@@ -216,11 +216,30 @@ class ParallelExecutor extends EventEmitter {
       this.emit('slotSuccess', { slotId, profile, result });
 
     } catch (error) {
+      // Get current step info from slot for detailed error logging
+      const slot = this.activeSlots.get(slotId);
+      const currentStepIndex = slot?.currentStep || 0;
+      const totalSteps = slot?.totalSteps || this.workflow?.steps?.length || 0;
+      const currentStepData = this.workflow?.steps?.[currentStepIndex];
+
+      const failedStep = {
+        index: currentStepIndex,
+        id: currentStepData?.id || '',
+        name: currentStepData?.name || '',
+        type: currentStepData?.type || ''
+      };
+
+      // Format error message with step info
+      const detailedError = `[Step ${currentStepIndex + 1}/${totalSteps}: ${failedStep.name || failedStep.id}] ${error.message}`;
+
       const errorInfo = {
         profileId: profile.id,
         profileName: profile.name,
-        error: error.message,
-        retryCount: item.retryCount
+        error: detailedError,
+        originalError: error.message,
+        failedStep,
+        retryCount: item.retryCount,
+        duration: Date.now() - (slot?.startTime || Date.now())
       };
 
       // Check if should retry
@@ -230,7 +249,7 @@ class ParallelExecutor extends EventEmitter {
         const delay = this.retryManager.getDelay(item.retryCount);
         item.retryCount++;
 
-        this.emit('slotRetry', { slotId, profile, error: error.message, retryCount: item.retryCount, delay });
+        this.emit('slotRetry', { slotId, profile, error: detailedError, failedStep, retryCount: item.retryCount, delay });
 
         // Re-add to queue after delay
         setTimeout(() => {
@@ -240,7 +259,7 @@ class ParallelExecutor extends EventEmitter {
         }, delay);
       } else {
         this.failed.push(errorInfo);
-        this.emit('slotFailure', { slotId, profile, error: error.message });
+        this.emit('slotFailure', { slotId, profile, error: detailedError, failedStep });
 
         if (this.config.stopOnError) {
           this.stop();

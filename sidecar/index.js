@@ -8,10 +8,12 @@ const crypto = require('crypto');
 const readline = require('readline');
 const http = require('http');
 const path = require('path');
+const os = require('os');
 
 // Data directories
 const DATA_DIR = path.join(process.cwd(), 'data');
 const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
+const PROFILES_DIR = path.join(DATA_DIR, 'profiles'); // Browser user data for persistent contexts
 
 // UUID v4 generator
 function uuidv4() {
@@ -19,8 +21,8 @@ function uuidv4() {
 }
 
 // Import modules
-const { buildStealthScript, getDefaultProfile } = require('./stealth');
-const { launchBrowser, getRecommendedEngine, supportsFeature } = require('./browser/engines');
+const { buildStealthScript, getDefaultProfile, buildWorkerInjectScript } = require('./stealth');
+const { launchBrowser, launchPersistentContext, getRecommendedEngine, supportsFeature } = require('./browser/engines');
 const { getDevice, applyDeviceToProfile } = require('./profile/devices');
 const { autoApplyGeo, lookupIP } = require('./geo/lookup');
 const extensionManager = require('./extension/manager');
@@ -348,8 +350,18 @@ async function initBrowser(options = {}) {
 async function createSession(profile, proxyConfig = null, options = {}) {
   const sessionId = uuidv4();
 
+  // If profile only has ID, look it up from cache
+  let inputProfile = profile;
+  if (profile && profile.id && Object.keys(profile).length <= 2) {
+    const cachedProfile = profileCache.get(profile.id);
+    if (cachedProfile) {
+      inputProfile = { ...cachedProfile, ...profile };
+      console.error(`[SESSION] Loaded profile from cache: ${cachedProfile.name || profile.id}`);
+    }
+  }
+
   // Apply device preset if specified
-  let fullProfile = { ...getDefaultProfile(), ...profile };
+  let fullProfile = { ...getDefaultProfile(), ...inputProfile };
   if (profile.deviceId) {
     try {
       fullProfile = applyDeviceToProfile(fullProfile, profile.deviceId);
@@ -369,109 +381,126 @@ async function createSession(profile, proxyConfig = null, options = {}) {
   const headless = options.headless || false;
   const blocking = options.blocking || {};
 
-  // Launch a NEW browser for each session (so we can detect when user closes it)
-  let browser;
+  // Build extension args for Chromium (works with Chromium, not Google Chrome)
+  let extensionArgs = [];
+  if (engineName === 'chromium' && fullProfile.extensionIds && fullProfile.extensionIds.length > 0) {
+    extensionArgs = extensionManager.buildExtensionArgs(fullProfile.extensionIds);
+    if (extensionArgs.length > 0) {
+      console.error(`[BROWSER] Loading ${fullProfile.extensionIds.length} extensions`);
+    }
+  }
+
+  // Auto-apply geo settings based on IP (with or without proxy)
+  if (fullProfile.timezoneMode === 'auto' || fullProfile.localeMode === 'auto') {
+    fullProfile = await autoApplyGeo(fullProfile, proxyConfig);
+  }
+
+  // Context options (used by persistent context)
+  const contextOptions = {
+    viewport: {
+      width: fullProfile.viewportWidth || 1920,
+      height: fullProfile.viewportHeight || 1080
+    },
+    userAgent: fullProfile.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    locale: fullProfile.locale || 'en-US',
+    timezoneId: fullProfile.timezone || 'America/New_York',
+    colorScheme: 'light',
+    deviceScaleFactor: fullProfile.pixelRatio || 1,
+  };
+
+  // Mobile device settings
+  if (fullProfile.isMobile) {
+    contextOptions.isMobile = true;
+    contextOptions.hasTouch = fullProfile.hasTouch ?? true;
+  }
+
+  // Geolocation
+  if (fullProfile.geoMode === 'allow' && fullProfile.geoLatitude) {
+    contextOptions.geolocation = {
+      latitude: fullProfile.geoLatitude,
+      longitude: fullProfile.geoLongitude,
+      accuracy: fullProfile.geoAccuracy || 100
+    };
+    contextOptions.permissions = ['geolocation'];
+  }
+
+  // Add proxy if provided
+  if (proxyConfig && proxyConfig.host) {
+    const proxyType = proxyConfig.type || proxyConfig.proxy_type || 'http';
+    contextOptions.proxy = {
+      server: `${proxyType}://${proxyConfig.host}:${proxyConfig.port}`,
+    };
+    if (proxyConfig.username && proxyConfig.password) {
+      contextOptions.proxy.username = proxyConfig.username;
+      contextOptions.proxy.password = proxyConfig.password;
+    }
+
+    // Set WebRTC public IP to proxy IP for IP consistency
+    if (fullProfile.webrtcMode === 'replace' && !fullProfile.webrtcPublicIP) {
+      fullProfile.webrtcPublicIP = proxyConfig.host;
+    }
+  }
+
+  // Create profile-specific user data directory for persistent context
+  // This prevents incognito detection since the browser has real storage
+  const profileId = fullProfile.id || sessionId;
+  const userDataDir = path.join(PROFILES_DIR, `profile-${profileId}`);
+
+  // Ensure profiles directory exists
+  const fs = require('fs');
+  if (!fs.existsSync(PROFILES_DIR)) {
+    fs.mkdirSync(PROFILES_DIR, { recursive: true });
+  }
+
+  // Launch browser with persistent context (non-incognito)
+  let browser, context;
   try {
-    browser = await launchBrowser(engineName, {
+    const result = await launchPersistentContext(engineName, userDataDir, {
       headless: headless,
+      args: extensionArgs,
+      ...contextOptions,
     });
-    console.error(`[BROWSER] Launched new ${engineName} browser for session ${sessionId}${headless ? ' (headless)' : ''}`);
+    browser = result.browser;
+    context = result.context;
+    console.error(`[BROWSER] Launched ${engineName} with persistent context for session ${sessionId}${headless ? ' (headless)' : ''}`);
+    console.error(`[BROWSER] User data dir: ${userDataDir}`);
   } catch (error) {
     console.error(`[BROWSER] Failed to launch ${engineName}:`, error.message);
     return { success: false, error: error.message };
   }
 
   try {
-    // Auto-apply geo settings from proxy if mode is 'auto'
-    if (proxyConfig && (fullProfile.timezoneMode === 'auto' || fullProfile.localeMode === 'auto')) {
-      fullProfile = await autoApplyGeo(fullProfile, proxyConfig);
-    }
 
-    // Context options
-    const contextOptions = {
-      viewport: {
-        width: fullProfile.viewportWidth || 1920,
-        height: fullProfile.viewportHeight || 1080
-      },
-      userAgent: fullProfile.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      locale: fullProfile.locale || 'en-US',
-      timezoneId: fullProfile.timezone || 'America/New_York',
-      colorScheme: 'light',
-      deviceScaleFactor: fullProfile.pixelRatio || 1,
-    };
-
-    // Mobile device settings
-    if (fullProfile.isMobile) {
-      contextOptions.isMobile = true;
-      contextOptions.hasTouch = fullProfile.hasTouch ?? true;
-    }
-
-    // Geolocation
-    if (fullProfile.geoMode === 'allow' && fullProfile.geoLatitude) {
-      contextOptions.geolocation = {
-        latitude: fullProfile.geoLatitude,
-        longitude: fullProfile.geoLongitude,
-        accuracy: fullProfile.geoAccuracy || 100
-      };
-      contextOptions.permissions = ['geolocation'];
-    }
-
-    // Add proxy if provided
-    if (proxyConfig && proxyConfig.host) {
-      const proxyType = proxyConfig.type || proxyConfig.proxy_type || 'http';
-      contextOptions.proxy = {
-        server: `${proxyType}://${proxyConfig.host}:${proxyConfig.port}`,
-      };
-      if (proxyConfig.username && proxyConfig.password) {
-        contextOptions.proxy.username = proxyConfig.username;
-        contextOptions.proxy.password = proxyConfig.password;
-      }
-
-      // Set WebRTC public IP to proxy IP for IP consistency
-      if (fullProfile.webrtcMode === 'replace' && !fullProfile.webrtcPublicIP) {
-        fullProfile.webrtcPublicIP = proxyConfig.host;
-      }
-    }
-
-    // Create isolated context
-    const context = await browser.newContext(contextOptions);
-
-    // Block unnecessary resources for performance (from options.blocking or profile settings)
+    // Prepare blocking settings
     const blockImages = blocking.images || fullProfile.blockImages;
     const blockMedia = blocking.media || fullProfile.blockMedia;
     const blockFonts = blocking.fonts;
     const blockCss = blocking.css;
     const blockTrackers = blocking.trackers;
+    const trackerDomains = [
+      'google-analytics.com', 'googletagmanager.com', 'facebook.net',
+      'doubleclick.net', 'googlesyndication.com', 'adservice.google.com',
+      'analytics.', 'tracker.', 'pixel.', 'beacon.'
+    ];
 
+    // Unified route handler for blocking resources
     if (blockImages || blockMedia || blockFonts || blockCss || blockTrackers) {
-      // Known tracker domains
-      const trackerDomains = [
-        'google-analytics.com', 'googletagmanager.com', 'facebook.net',
-        'doubleclick.net', 'googlesyndication.com', 'adservice.google.com',
-        'analytics.', 'tracker.', 'pixel.', 'beacon.'
-      ];
-
-      await context.route('**/*', (route) => {
+      await context.route('**/*', async (route) => {
         const resourceType = route.request().resourceType();
         const url = route.request().url();
 
-        // Block images
         if (blockImages && resourceType === 'image') {
           return route.abort();
         }
-        // Block media (video, audio)
-        if (blockMedia && ['media'].includes(resourceType)) {
+        if (blockMedia && resourceType === 'media') {
           return route.abort();
         }
-        // Block fonts
         if (blockFonts && resourceType === 'font') {
           return route.abort();
         }
-        // Block CSS
         if (blockCss && resourceType === 'stylesheet') {
           return route.abort();
         }
-        // Block trackers
         if (blockTrackers && trackerDomains.some(d => url.includes(d))) {
           return route.abort();
         }
@@ -483,10 +512,160 @@ async function createSession(profile, proxyConfig = null, options = {}) {
     if (engineName === 'chromium' && supportsFeature('chromium', 'stealth')) {
       const stealthScript = buildStealthScript(fullProfile);
       await context.addInitScript(stealthScript);
+
+      // Intercept worker scripts and prepend stealth code
+      const workerStealthScript = buildWorkerInjectScript(fullProfile);
+      await context.route('**/*.js', async (route) => {
+        const request = route.request();
+        const resourceType = request.resourceType();
+
+        // Only intercept scripts that might be workers
+        // Worker scripts are loaded as 'script' or 'other' type
+        if (resourceType === 'script' || resourceType === 'other') {
+          const url = request.url();
+
+          // Check if this looks like a worker script
+          // CreepJS uses blob URLs and inline workers, so we also intercept creepjs-related scripts
+          if (url.includes('worker') || url.includes('creep') || url.includes('Worker')) {
+            try {
+              const response = await route.fetch();
+              const body = await response.text();
+
+              // Prepend stealth code
+              const modifiedBody = workerStealthScript + '\n' + body;
+
+              await route.fulfill({
+                response,
+                body: modifiedBody,
+                headers: {
+                  ...response.headers(),
+                  'content-length': Buffer.byteLength(modifiedBody).toString()
+                }
+              });
+              console.error(`[STEALTH] Modified worker script: ${url.substring(0, 60)}...`);
+              return;
+            } catch (e) {
+              // If fetch fails, continue normally
+            }
+          }
+        }
+        return route.continue();
+      });
     }
 
     // Create page
     const page = await context.newPage();
+
+    // Use CDP to override User-Agent Metadata (Sec-Ch-Ua headers)
+    if (engineName === 'chromium') {
+      try {
+        const uaMatch = (fullProfile.userAgent || '').match(/Chrome\/(\d+)/);
+        const chromeVersion = uaMatch ? uaMatch[1] : '120';
+        const fullVersionMatch = (fullProfile.userAgent || '').match(/Chrome\/([\d.]+)/);
+        const fullVersion = fullVersionMatch ? fullVersionMatch[1] : '120.0.0.0';
+
+        const cdpSession = await context.newCDPSession(page);
+
+        // Use CDP to inject stealth script even earlier (before any page scripts)
+        const stealthScript = buildStealthScript(fullProfile);
+        await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+          source: stealthScript
+        });
+        console.error(`[STEALTH] CDP script injection enabled`);
+
+        await cdpSession.send('Network.setUserAgentOverride', {
+          userAgent: fullProfile.userAgent || contextOptions.userAgent,
+          platform: fullProfile.platform || 'Win32',
+          userAgentMetadata: {
+            brands: [
+              { brand: 'Chromium', version: chromeVersion },
+              { brand: 'Google Chrome', version: chromeVersion },
+              { brand: 'Not-A.Brand', version: '99' }
+            ],
+            fullVersionList: [
+              { brand: 'Chromium', version: fullVersion },
+              { brand: 'Google Chrome', version: fullVersion },
+              { brand: 'Not-A.Brand', version: '99.0.0.0' }
+            ],
+            fullVersion: fullVersion,
+            platform: fullProfile.os === 'macos' ? 'macOS' : fullProfile.os === 'linux' ? 'Linux' : 'Windows',
+            platformVersion: fullProfile.os === 'macos' ? '13.0.0' : fullProfile.os === 'linux' ? '5.15.0' : '10.0.0',
+            architecture: 'x86',
+            model: '',
+            mobile: fullProfile.isMobile || false,
+            bitness: '64',
+            wow64: false
+          }
+        });
+        console.error(`[STEALTH] Set User-Agent Metadata: Chrome/${chromeVersion}`);
+
+        // Listen for workers and inject stealth script via evaluate
+        const workerStealthScript = buildWorkerInjectScript(fullProfile);
+
+        // Use browser-level CDP to auto-attach to all targets including workers
+        // For persistent context, browser is actually the context, so we need to get the real browser
+        const realBrowser = browser.browser ? browser.browser() : browser;
+        let browserCdp = null;
+
+        // Try to get browser-level CDP session (may fail with persistent context)
+        if (realBrowser && typeof realBrowser.newBrowserCDPSession === 'function') {
+          browserCdp = await realBrowser.newBrowserCDPSession();
+        } else {
+          console.error('[STEALTH] Browser CDP not available for persistent context, using page CDP only');
+        }
+
+        if (browserCdp) {
+          await browserCdp.send('Target.setAutoAttach', {
+            autoAttach: true,
+            waitForDebuggerOnStart: true,
+            flatten: true,
+            filter: [
+              { type: 'worker' },
+              { type: 'shared_worker' },
+              { type: 'service_worker' }
+            ]
+          });
+
+          browserCdp.on('Target.attachedToTarget', async ({ sessionId: targetSessionId, targetInfo }) => {
+            if (targetInfo.type === 'worker' || targetInfo.type === 'shared_worker' || targetInfo.type === 'service_worker') {
+              try {
+                // Inject stealth script into worker before it runs
+                await browserCdp.send('Runtime.evaluate', {
+                  expression: workerStealthScript,
+                  awaitPromise: false,
+                }, targetSessionId);
+
+                // Resume the worker
+                await browserCdp.send('Runtime.runIfWaitingForDebugger', {}, targetSessionId);
+
+                console.error(`[STEALTH] CDP injected into ${targetInfo.type}: ${(targetInfo.url || 'blob').substring(0, 40)}...`);
+              } catch (e) {
+                // Try to resume anyway
+                try {
+                  await browserCdp.send('Runtime.runIfWaitingForDebugger', {}, targetSessionId);
+                } catch (e2) {}
+                console.error(`[STEALTH] Worker CDP error: ${e.message}`);
+              }
+            }
+          });
+          console.error('[STEALTH] Worker auto-attach enabled');
+        }
+
+        // Also use page-level worker events as backup (runs after worker starts)
+        page.on('worker', async (worker) => {
+          try {
+            await worker.evaluate((script) => {
+              try { new Function(script)(); } catch(e) {}
+            }, workerStealthScript);
+            console.error(`[STEALTH] Evaluate injected into worker: ${worker.url().substring(0, 40)}...`);
+          } catch (e) {
+            // Worker might not support evaluate
+          }
+        });
+      } catch (e) {
+        console.error(`[STEALTH] CDP override failed: ${e.message}`);
+      }
+    }
 
     // Store session with browser reference
     sessions.set(sessionId, {
@@ -740,6 +919,43 @@ function getDevices() {
 function getEngines() {
   const { getAvailableEngines } = require('./browser/engines');
   return { success: true, engines: getAvailableEngines() };
+}
+
+/**
+ * Get system info including actual OS for profile consistency
+ */
+function getSystemInfo() {
+  const platform = os.platform(); // 'linux', 'darwin', 'win32'
+  const arch = os.arch(); // 'x64', 'arm64', etc.
+  const cpuCores = os.cpus().length;
+  const totalMemory = Math.round(os.totalmem() / (1024 * 1024 * 1024)); // GB
+
+  // Map platform to profile OS name
+  let actualOS;
+  if (platform === 'win32') {
+    actualOS = 'windows';
+  } else if (platform === 'darwin') {
+    actualOS = 'macos';
+  } else if (platform === 'linux') {
+    actualOS = 'linux';
+  } else if (platform === 'android') {
+    actualOS = 'android';
+  } else {
+    actualOS = 'linux'; // Default fallback
+  }
+
+  return {
+    success: true,
+    system: {
+      actualOS,        // OS name for profile matching: 'windows', 'macos', 'linux', 'android', 'ios'
+      platform,        // Raw Node.js platform
+      arch,            // CPU architecture
+      cpuCores,        // Number of CPU cores
+      totalMemory,     // Total RAM in GB
+      hostname: os.hostname(),
+      release: os.release()
+    }
+  };
 }
 
 /**
@@ -2080,6 +2296,14 @@ function cleanupExecutions(days = 30) {
 function logExecution(data) {
   try {
     const db = getDB();
+
+    // Build detailed error message if failed
+    let errorMessage = data.error || '';
+    if (data.status === 'failed' && data.failedStep) {
+      const stepInfo = `[Step ${data.failedStep.index + 1}/${data.totalSteps}: ${data.failedStep.name || data.failedStep.id}]`;
+      errorMessage = `${stepInfo} ${errorMessage}`;
+    }
+
     const execution = {
       id: `exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       scheduleId: data.scheduleId || '',
@@ -2087,19 +2311,476 @@ function logExecution(data) {
       profileId: data.profileId,
       profileName: data.profileName || '',
       status: data.status,
-      error: data.error || '',
+      error: errorMessage,
       startedAt: data.startedAt || new Date().toISOString(),
       finishedAt: data.finishedAt || new Date().toISOString(),
       duration: data.duration || 0,
       stepsCompleted: data.stepsCompleted || 0,
       totalSteps: data.totalSteps || 0,
-      logs: data.logs || []
+      logs: data.logs || [],
+      // Additional fields for debugging
+      failedStepId: data.failedStep?.id || '',
+      failedStepName: data.failedStep?.name || '',
+      failedStepIndex: data.failedStep?.index ?? -1,
     };
     db.createExecution(execution);
     return { success: true, execution };
   } catch (error) {
     return { success: false, error: error.message };
   }
+}
+
+// ============ WARMUP API ============
+
+const warmup = require('./warmup');
+
+/**
+ * Get all warmup templates
+ */
+function getWarmupTemplates() {
+  try {
+    const db = getDB();
+    const templates = db.getWarmupTemplates();
+    return { success: true, templates };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get default warmup templates (pre-built)
+ */
+function getDefaultWarmupTemplates() {
+  return { success: true, templates: warmup.DEFAULT_TEMPLATES };
+}
+
+/**
+ * Get warmup template by ID
+ */
+function getWarmupTemplate(id) {
+  try {
+    const db = getDB();
+    const template = db.getWarmupTemplate(id);
+    if (!template) {
+      // Check default templates
+      const defaultTemplate = warmup.getTemplateById(id);
+      if (defaultTemplate) {
+        return { success: true, template: defaultTemplate };
+      }
+      return { success: false, error: 'Template not found' };
+    }
+    return { success: true, template };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Create warmup template
+ */
+function createWarmupTemplate(templateData) {
+  try {
+    const db = getDB();
+    const template = warmup.createWarmupTemplate(templateData);
+    const created = db.createWarmupTemplate(template);
+    return { success: true, template: created };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Update warmup template
+ */
+function updateWarmupTemplate(id, templateData) {
+  try {
+    const db = getDB();
+    const existing = db.getWarmupTemplate(id);
+    if (!existing) {
+      return { success: false, error: 'Template not found' };
+    }
+    const updated = db.updateWarmupTemplate({ ...existing, ...templateData, id });
+    return { success: true, template: updated };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Delete warmup template
+ */
+function deleteWarmupTemplate(id) {
+  try {
+    const db = getDB();
+    db.deleteWarmupTemplate(id);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get all warmup progress
+ */
+function getWarmupProgress(options = {}) {
+  try {
+    const db = getDB();
+    const limit = options.limit || 100;
+    const progress = db.getAllWarmupProgress(limit);
+    return { success: true, progress };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get active warmups
+ */
+function getActiveWarmups() {
+  try {
+    const db = getDB();
+    const warmups = db.getActiveWarmups();
+    return { success: true, warmups };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get warmups by profile
+ */
+function getWarmupsByProfile(profileId) {
+  try {
+    const db = getDB();
+    const warmups = db.getWarmupsByProfile(profileId);
+    return { success: true, warmups };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Start warmup for profiles
+ */
+function startWarmup(templateId, profileIds, options = {}) {
+  try {
+    const db = getDB();
+
+    // Get template (from DB or default)
+    let template = db.getWarmupTemplate(templateId);
+    if (!template) {
+      template = warmup.getTemplateById(templateId);
+      if (!template) {
+        return { success: false, error: 'Template not found' };
+      }
+      // Save default template to DB
+      template = db.createWarmupTemplate(template);
+    }
+
+    const results = [];
+    const now = new Date();
+    const firstRun = warmup.calculateNextRun(template.schedule);
+
+    for (const profileId of profileIds) {
+      // Check if profile already has active warmup
+      const existing = db.getWarmupsByProfile(profileId);
+      const hasActive = existing.some(p =>
+        p.warmupId === templateId &&
+        ['pending', 'running', 'paused'].includes(p.status)
+      );
+
+      if (hasActive) {
+        results.push({ profileId, error: 'Already has active warmup for this template' });
+        continue;
+      }
+
+      // Create progress record
+      const progress = warmup.createWarmupProgress({
+        warmupId: templateId,
+        profileId,
+        profileName: options.profileNames?.[profileId] || '',
+        startDate: now.toISOString().split('T')[0],
+        currentDay: 1,
+        currentPhase: 1,
+        status: 'pending',
+        dailyLogs: [],
+        nextRunAt: firstRun.toISOString()
+      });
+
+      const created = db.createWarmupProgress(progress);
+      results.push({ profileId, progress: created });
+    }
+
+    return { success: true, results };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Pause warmup
+ */
+function pauseWarmup(progressId) {
+  try {
+    const db = getDB();
+    db.updateWarmupProgressStatus(progressId, 'paused');
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Resume warmup
+ */
+function resumeWarmup(progressId) {
+  try {
+    const db = getDB();
+    const progress = db.getWarmupProgress(progressId);
+    if (!progress) {
+      return { success: false, error: 'Progress not found' };
+    }
+
+    const template = db.getWarmupTemplate(progress.warmupId);
+    if (!template) {
+      return { success: false, error: 'Template not found' };
+    }
+
+    const nextRun = warmup.calculateNextRun(template.schedule);
+    db.updateWarmupProgress({
+      ...progress,
+      status: 'running',
+      nextRunAt: nextRun.toISOString()
+    });
+
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Stop warmup
+ */
+function stopWarmup(progressId) {
+  try {
+    const db = getDB();
+    db.updateWarmupProgressStatus(progressId, 'failed', 'Stopped by user');
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Delete warmup progress
+ */
+function deleteWarmupProgress(progressId) {
+  try {
+    const db = getDB();
+    db.deleteWarmupProgress(progressId);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Run warmup now (manual trigger)
+ */
+async function runWarmupNow(progressId) {
+  try {
+    const db = getDB();
+
+    // Get warmup progress
+    const progress = db.getWarmupProgress(progressId);
+    if (!progress) {
+      return { success: false, error: 'Warmup progress not found' };
+    }
+
+    if (progress.status === 'running') {
+      return { success: false, error: 'Warmup is already running' };
+    }
+
+    if (progress.status === 'completed') {
+      return { success: false, error: 'Warmup is already completed' };
+    }
+
+    // Get template
+    let template = db.getWarmupTemplate(progress.warmupId);
+    if (!template) {
+      template = warmup.getTemplateById(progress.warmupId);
+    }
+    if (!template) {
+      return { success: false, error: 'Template not found' };
+    }
+
+    // Get profile from cache
+    const profile = profileCache.get(progress.profileId);
+    if (!profile) {
+      return { success: false, error: 'Profile not found in cache. Please sync profiles from the app.' };
+    }
+
+    // Get resources for this profile (credentials/cookies)
+    // Resources are stored in the profile object from the frontend
+    const resources = profile.resources || [];
+    const platformResource = resources.find(r => r.platform === template.platform) || {};
+
+    // Update status to running
+    db.updateWarmupProgressStatus(progressId, 'running');
+
+    // Create browser session
+    const sessionResult = await createSession(progress.profileId, { headless: false });
+    if (!sessionResult.success) {
+      db.updateWarmupProgressStatus(progressId, 'paused', sessionResult.error);
+      return { success: false, error: 'Failed to create session: ' + sessionResult.error };
+    }
+
+    const sessionId = sessionResult.sessionId;
+
+    try {
+      // Get page from session
+      const session = sessions.get(sessionId);
+      if (!session || !session.page) {
+        throw new Error('Session page not available');
+      }
+
+      const page = session.page;
+      const context = session.context;
+
+      console.error(`[Warmup] Starting executor for ${progress.profileName}, platform: ${template.platform}`);
+      console.error(`[Warmup] Resource:`, JSON.stringify(platformResource || {}).slice(0, 200));
+
+      // Execute warmup
+      const executor = new warmup.WarmupExecutor({ verbose: true });
+
+      const result = await executor.executeDailyWarmup({
+        page,
+        context,
+        template,
+        progress,
+        resource: platformResource,
+        onProgress: (info) => {
+          console.error(`[Warmup] ${progress.profileName}: ${info.action} - ${info.status}`);
+        }
+      });
+
+      console.error(`[Warmup] Executor completed for ${progress.profileName}`);
+      console.error(`[Warmup] Result:`, JSON.stringify(result, null, 2));
+
+      // Update progress
+      const newDay = progress.currentDay + 1;
+      const isCompleted = newDay > template.totalDays;
+      console.error(`[Warmup] newDay=${newDay}, isCompleted=${isCompleted}, totalDays=${template.totalDays}`);
+
+      // Calculate next phase
+      const nextPhase = warmup.getCurrentPhase(template.phases, newDay);
+
+      // Add log entry (simplified to avoid serialization issues)
+      const dailyLogs = progress.dailyLogs || [];
+      dailyLogs.push({
+        day: result.day,
+        phase: result.phase,
+        phaseName: result.phaseName,
+        actions: result.actions || {},
+        loginMethod: result.loginMethod || null,
+        startedAt: result.startedAt,
+        finishedAt: result.finishedAt || new Date().toISOString(),
+        errors: (result.errors || []).map(e => String(e))
+      });
+
+      try {
+        console.error(`[Warmup] Updating database...`);
+        if (isCompleted) {
+          db.updateWarmupProgress({
+            id: progressId,
+            profileName: progress.profileName || '',
+            currentDay: template.totalDays,
+            currentPhase: template.phases.length,
+            status: 'completed',
+            dailyLogs,
+            nextRunAt: null,
+            completedAt: new Date().toISOString(),
+            error: ''
+          });
+        } else {
+          const nextRun = warmup.calculateNextRun(template.schedule);
+          const nextPhaseIndex = nextPhase?.index ?? progress.currentPhase ?? 1;
+          db.updateWarmupProgress({
+            id: progressId,
+            profileName: progress.profileName || '',
+            currentDay: newDay,
+            currentPhase: nextPhaseIndex,
+            status: 'pending',
+            dailyLogs,
+            nextRunAt: nextRun instanceof Date ? nextRun.toISOString() : (nextRun || null),
+            completedAt: null,
+            error: ''
+          });
+        }
+        console.error(`[Warmup] Database updated successfully`);
+      } catch (dbError) {
+        console.error(`[Warmup] Database update failed:`, dbError.message);
+        throw dbError;
+      }
+
+      // Close session after warmup
+      await closeSession(sessionId);
+
+      return {
+        success: true,
+        result,
+        newDay: isCompleted ? template.totalDays : newDay,
+        isCompleted
+      };
+
+    } catch (execError) {
+      // Update status to failed
+      const errorMsg = execError?.message || String(execError) || 'Unknown error';
+      console.error(`[Warmup] Executor error for ${progress.profileName}:`, errorMsg);
+      console.error(`[Warmup] Full error:`, execError);
+      try {
+        db.updateWarmupProgressStatus(progressId, 'paused', errorMsg);
+      } catch (dbError) {
+        console.error('[Warmup] Failed to update status:', dbError.message);
+      }
+
+      // Try to close session
+      try {
+        await closeSession(sessionId);
+      } catch (e) {}
+
+      return { success: false, error: errorMsg };
+    }
+
+  } catch (error) {
+    const errorMsg = error?.message || String(error) || 'Unknown error';
+    return { success: false, error: errorMsg };
+  }
+}
+
+/**
+ * Get warmup stats
+ */
+function getWarmupStats() {
+  try {
+    const db = getDB();
+    const stats = db.getWarmupStats();
+    return { success: true, stats };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get supported platforms
+ */
+function getWarmupPlatforms() {
+  return {
+    success: true,
+    platforms: warmup.PLATFORMS,
+    actions: warmup.PLATFORM_ACTIONS
+  };
 }
 
 // ============ HTTP Server (for frontend dev) ============
@@ -2185,7 +2866,7 @@ const httpServer = http.createServer(async (req, res) => {
         } else if (action === 'runDetectionSiteTest') {
           result = await handler(params.sessionId, params.siteUrl, params.timeout);
         } else if (action === 'validateWorkflow' || action === 'registerWorkflow') {
-          result = await handler(params);
+          result = await handler(params.workflow);
         } else if (action === 'getWorkflow' || action === 'deleteWorkflow') {
           result = await handler(params.id);
         } else if (action === 'executeWorkflow') {
@@ -2252,8 +2933,20 @@ const httpServer = http.createServer(async (req, res) => {
           result = await handler(params);
         } else if (action === 'cleanupExecutions') {
           result = await handler(params.days);
+        } else if (action === 'startWarmup') {
+          result = await handler(params.templateId, params.profileIds, params.options);
+        } else if (action === 'pauseWarmup' || action === 'resumeWarmup' || action === 'stopWarmup' || action === 'deleteWarmupProgress' || action === 'runWarmupNow') {
+          result = await handler(params.progressId);
+        } else if (action === 'getWarmupTemplate' || action === 'deleteWarmupTemplate') {
+          result = await handler(params.id);
+        } else if (action === 'createWarmupTemplate' || action === 'updateWarmupTemplate') {
+          result = await handler(params.template || params);
+        } else if (action === 'getWarmupsByProfile') {
+          result = await handler(params.profileId);
+        } else if (action === 'getWarmupProgress') {
+          result = await handler(params);
         } else {
-          // No-arg handlers (listSchedules, getSchedulerStatus, getCronPresets, listParallelExecutions, getNotificationConfig, getExecutionStats, etc.)
+          // No-arg handlers (listSchedules, getSchedulerStatus, getCronPresets, listParallelExecutions, getNotificationConfig, getExecutionStats, getDefaultWarmupTemplates, getActiveWarmups, getWarmupStats, getWarmupPlatforms, etc.)
           result = await handler();
         }
 
@@ -2328,6 +3021,7 @@ const handlers = {
   getTitle,
   getDevices,
   getEngines,
+  getSystemInfo,
   geoLookup,
 
   // Testing
@@ -2425,6 +3119,25 @@ const handlers = {
   exportExecutionsCSV,
   cleanupExecutions,
   logExecution,
+
+  // Warmup
+  getWarmupTemplates,
+  getDefaultWarmupTemplates,
+  getWarmupTemplate,
+  createWarmupTemplate,
+  updateWarmupTemplate,
+  deleteWarmupTemplate,
+  getWarmupProgress,
+  getActiveWarmups,
+  getWarmupsByProfile,
+  startWarmup,
+  pauseWarmup,
+  resumeWarmup,
+  stopWarmup,
+  deleteWarmupProgress,
+  runWarmupNow,
+  getWarmupStats,
+  getWarmupPlatforms,
 };
 
 // Listen for commands from Tauri

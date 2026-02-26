@@ -15,7 +15,7 @@
   let showAddForm = false;
   let editingResource = null;
 
-  // Form data
+  // Form data (Note: Cookies are managed at Profile level in Storage tab)
   let form = {
     platform: '',
     name: '',
@@ -27,7 +27,6 @@
     recoveryEmail: '',
     token: '',
     session: '',
-    cookies: '',
     autoLogin: true
   };
 
@@ -93,7 +92,6 @@
       recoveryEmail: '',
       token: '',
       session: '',
-      cookies: '',
       autoLogin: true
     };
   }
@@ -117,7 +115,6 @@
       recoveryEmail: resource.recoveryEmail || '',
       token: resource.token || '',
       session: resource.session || '',
-      cookies: resource.cookies || '',
       autoLogin: resource.autoLogin !== false
     };
     editingResource = resource;
@@ -145,7 +142,6 @@
         recoveryEmail: form.recoveryEmail,
         token: form.token,
         session: form.session,
-        cookies: form.cookies,
         autoLogin: form.autoLogin
       };
 
@@ -277,13 +273,6 @@
                 <div class="form-group">
                   <label>Session String</label>
                   <textarea bind:value={form.session} placeholder="Session data" rows="3"></textarea>
-                </div>
-              {/if}
-
-              {#if hasField(form.platform, 'cookies')}
-                <div class="form-group">
-                  <label>Cookies (JSON)</label>
-                  <textarea bind:value={form.cookies} placeholder="Paste cookies JSON here" rows="4"></textarea>
                 </div>
               {/if}
 

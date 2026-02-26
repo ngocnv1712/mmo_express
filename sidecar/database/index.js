@@ -397,6 +397,240 @@ class SidecarDB {
     };
   }
 
+  // ============ WARMUP TEMPLATES ============
+
+  getWarmupTemplates() {
+    const stmt = this.db.prepare('SELECT * FROM warmup_templates ORDER BY created_at DESC');
+    return stmt.all().map(this.parseWarmupTemplate);
+  }
+
+  getWarmupTemplate(id) {
+    const stmt = this.db.prepare('SELECT * FROM warmup_templates WHERE id = ?');
+    const row = stmt.get(id);
+    return row ? this.parseWarmupTemplate(row) : null;
+  }
+
+  getDefaultTemplates() {
+    const stmt = this.db.prepare('SELECT * FROM warmup_templates WHERE is_default = 1');
+    return stmt.all().map(this.parseWarmupTemplate);
+  }
+
+  createWarmupTemplate(template) {
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(`
+      INSERT INTO warmup_templates (
+        id, name, description, platform, total_days, phases, schedule, is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      template.id,
+      template.name,
+      template.description || '',
+      template.platform,
+      template.totalDays || 21,
+      JSON.stringify(template.phases || []),
+      JSON.stringify(template.schedule || {}),
+      template.isDefault ? 1 : 0,
+      template.createdAt || now,
+      template.updatedAt || now
+    );
+    return this.getWarmupTemplate(template.id);
+  }
+
+  updateWarmupTemplate(template) {
+    const stmt = this.db.prepare(`
+      UPDATE warmup_templates SET
+        name = ?, description = ?, platform = ?, total_days = ?,
+        phases = ?, schedule = ?, is_default = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    stmt.run(
+      template.name,
+      template.description || '',
+      template.platform,
+      template.totalDays || 21,
+      JSON.stringify(template.phases || []),
+      JSON.stringify(template.schedule || {}),
+      template.isDefault ? 1 : 0,
+      new Date().toISOString(),
+      template.id
+    );
+    return this.getWarmupTemplate(template.id);
+  }
+
+  deleteWarmupTemplate(id) {
+    // Also delete associated progress records
+    this.db.prepare('DELETE FROM warmup_progress WHERE warmup_id = ?').run(id);
+    this.db.prepare('DELETE FROM warmup_templates WHERE id = ?').run(id);
+    return true;
+  }
+
+  parseWarmupTemplate(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      platform: row.platform,
+      totalDays: row.total_days,
+      phases: JSON.parse(row.phases || '[]'),
+      schedule: JSON.parse(row.schedule || '{}'),
+      isDefault: row.is_default === 1,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  // ============ WARMUP PROGRESS ============
+
+  getWarmupProgress(id) {
+    const stmt = this.db.prepare(`
+      SELECT p.*, t.name as template_name, t.platform as template_platform
+      FROM warmup_progress p
+      LEFT JOIN warmup_templates t ON p.warmup_id = t.id
+      WHERE p.id = ?
+    `);
+    const row = stmt.get(id);
+    return row ? this.parseWarmupProgress(row) : null;
+  }
+
+  getActiveWarmups() {
+    const stmt = this.db.prepare(`
+      SELECT p.*, t.name as template_name, t.platform as template_platform, t.total_days
+      FROM warmup_progress p
+      LEFT JOIN warmup_templates t ON p.warmup_id = t.id
+      WHERE p.status IN ('pending', 'running')
+      ORDER BY p.next_run_at ASC
+    `);
+    return stmt.all().map(this.parseWarmupProgress.bind(this));
+  }
+
+  getWarmupsByProfile(profileId) {
+    const stmt = this.db.prepare(`
+      SELECT p.*, t.name as template_name, t.platform as template_platform, t.total_days
+      FROM warmup_progress p
+      LEFT JOIN warmup_templates t ON p.warmup_id = t.id
+      WHERE p.profile_id = ?
+      ORDER BY p.created_at DESC
+    `);
+    return stmt.all(profileId).map(this.parseWarmupProgress.bind(this));
+  }
+
+  getAllWarmupProgress(limit = 100) {
+    const stmt = this.db.prepare(`
+      SELECT p.*, t.name as template_name, t.platform as template_platform, t.total_days
+      FROM warmup_progress p
+      LEFT JOIN warmup_templates t ON p.warmup_id = t.id
+      ORDER BY p.updated_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(limit).map(this.parseWarmupProgress.bind(this));
+  }
+
+  createWarmupProgress(progress) {
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(`
+      INSERT INTO warmup_progress (
+        id, warmup_id, profile_id, profile_name, start_date,
+        current_day, current_phase, status, daily_logs,
+        next_run_at, completed_at, error, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const id = progress.id || `progress-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    stmt.run(
+      id,
+      progress.warmupId,
+      progress.profileId,
+      progress.profileName || '',
+      progress.startDate || now.split('T')[0],
+      progress.currentDay || 1,
+      progress.currentPhase || 1,
+      progress.status || 'pending',
+      JSON.stringify(progress.dailyLogs || []),
+      progress.nextRunAt || null,
+      progress.completedAt || null,
+      progress.error || '',
+      progress.createdAt || now,
+      progress.updatedAt || now
+    );
+    return this.getWarmupProgress(id);
+  }
+
+  updateWarmupProgress(progress) {
+    const stmt = this.db.prepare(`
+      UPDATE warmup_progress SET
+        profile_name = ?, current_day = ?, current_phase = ?,
+        status = ?, daily_logs = ?, next_run_at = ?,
+        completed_at = ?, error = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    stmt.run(
+      progress.profileName || '',
+      progress.currentDay,
+      progress.currentPhase,
+      progress.status,
+      JSON.stringify(progress.dailyLogs || []),
+      progress.nextRunAt || null,
+      progress.completedAt || null,
+      progress.error || '',
+      new Date().toISOString(),
+      progress.id
+    );
+    return this.getWarmupProgress(progress.id);
+  }
+
+  updateWarmupProgressStatus(id, status, error = null) {
+    const stmt = this.db.prepare(`
+      UPDATE warmup_progress SET status = ?, error = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    stmt.run(status, error || '', new Date().toISOString(), id);
+  }
+
+  deleteWarmupProgress(id) {
+    this.db.prepare('DELETE FROM warmup_progress WHERE id = ?').run(id);
+    return true;
+  }
+
+  getWarmupStats() {
+    const total = this.db.prepare('SELECT COUNT(*) as count FROM warmup_progress').get().count;
+    const active = this.db.prepare("SELECT COUNT(*) as count FROM warmup_progress WHERE status IN ('pending', 'running')").get().count;
+    const completed = this.db.prepare("SELECT COUNT(*) as count FROM warmup_progress WHERE status = 'completed'").get().count;
+    const failed = this.db.prepare("SELECT COUNT(*) as count FROM warmup_progress WHERE status = 'failed'").get().count;
+    const paused = this.db.prepare("SELECT COUNT(*) as count FROM warmup_progress WHERE status = 'paused'").get().count;
+
+    return {
+      total,
+      active,
+      completed,
+      failed,
+      paused,
+      successRate: total > 0 ? Math.round((completed / total) * 100) : 0
+    };
+  }
+
+  parseWarmupProgress(row) {
+    return {
+      id: row.id,
+      warmupId: row.warmup_id,
+      profileId: row.profile_id,
+      profileName: row.profile_name,
+      templateName: row.template_name,
+      templatePlatform: row.template_platform,
+      totalDays: row.total_days || 21,
+      startDate: row.start_date,
+      currentDay: row.current_day,
+      currentPhase: row.current_phase,
+      status: row.status,
+      dailyLogs: JSON.parse(row.daily_logs || '[]'),
+      nextRunAt: row.next_run_at,
+      completedAt: row.completed_at,
+      error: row.error,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
   // ============ UTILITIES ============
 
   close() {

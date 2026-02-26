@@ -68,11 +68,13 @@ const defaultProfile = {
   webglMetadataMode: 'custom', // real, custom
   webglVendor: 'Google Inc. (NVIDIA)',
   webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  webglNoise: 0.02,           // 0.02-0.03 recommended for WebGL image noise
 
   // Fingerprint Noise
   canvasNoise: 0.02,          // 0.02-0.03 recommended
   audioNoise: 0.0001,         // 0.0001-0.001 recommended
   clientRectsNoise: 0.1,      // 0.1-0.3 recommended
+  fontNoise: 0.01,            // Font metric noise
 
   // WebRTC Settings
   webrtcMode: WebRTCMode.REPLACE,

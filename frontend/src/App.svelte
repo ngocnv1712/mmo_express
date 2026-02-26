@@ -3,6 +3,7 @@
   import ProfileList from './lib/ProfileList.svelte';
   import SessionList from './lib/SessionList.svelte';
   import AutomationBuilder from './lib/automation/AutomationBuilder.svelte';
+  import WarmupDashboard from './lib/warmup/WarmupDashboard.svelte';
   import Settings from './lib/Settings.svelte';
   import Dialog from './lib/Dialog.svelte';
 
@@ -12,6 +13,7 @@
     { id: 'profiles', label: 'Profiles', icon: 'user' },
     { id: 'sessions', label: 'Sessions', icon: 'play' },
     { id: 'workflows', label: 'Workflows', icon: 'flow' },
+    { id: 'warmup', label: 'Warm-up', icon: 'fire' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 </script>
@@ -61,6 +63,11 @@
                 <path d="M6 9v3a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V9"/>
                 <path d="M12 12v3"/>
               </svg>
+            {:else if tab.icon === 'fire'}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2c.5 2.5 2 4.5 3 6 1 1.5 1.5 3 1.5 4.5a6.5 6.5 0 1 1-13 0c0-1.5.5-3 1.5-4.5 1-1.5 2.5-3.5 3-6a4 4 0 0 1 4 0z"/>
+                <path d="M12 14a2.5 2.5 0 0 0 0 5 2.5 2.5 0 0 0 0-5z"/>
+              </svg>
             {:else if tab.icon === 'settings'}
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="3"/>
@@ -92,6 +99,8 @@
           <ExtensionList />
         {:else if currentTab === 'workflows'}
           <AutomationBuilder />
+        {:else if currentTab === 'warmup'}
+          <WarmupDashboard />
         {:else if currentTab === 'settings'}
           <Settings />
         {/if}
