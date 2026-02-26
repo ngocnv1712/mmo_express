@@ -34,7 +34,7 @@ npm-debug.log*
 frontend/src-tauri/target/
 
 # Sidecar binaries (built by CI)
-frontend/src-tauri/binaries/
+frontend/src-tauri/binaries/sidecar-*
 sidecar/dist/
 
 # Sidecar data (local)

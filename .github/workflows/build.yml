@@ -53,20 +53,24 @@ jobs:
         run: |
           cd sidecar
           npm run build
+          mkdir -p ../frontend/src-tauri/binaries
           cp dist/sidecar-linux ../frontend/src-tauri/binaries/sidecar-x86_64-unknown-linux-gnu
 
       - name: Build sidecar (Windows)
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
           cd sidecar
           npm run build
-          copy dist\sidecar-win.exe ..\frontend\src-tauri\binaries\sidecar-x86_64-pc-windows-msvc.exe
+          New-Item -ItemType Directory -Force -Path ../frontend/src-tauri/binaries
+          Copy-Item dist/sidecar-win.exe ../frontend/src-tauri/binaries/sidecar-x86_64-pc-windows-msvc.exe
 
       - name: Build sidecar (macOS)
         if: matrix.platform == 'macos-latest'
         run: |
           cd sidecar
           npm run build
+          mkdir -p ../frontend/src-tauri/binaries
           cp dist/sidecar-macos ../frontend/src-tauri/binaries/sidecar-${{ matrix.target }}
 
       - name: Install frontend dependencies
